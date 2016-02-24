@@ -9,6 +9,7 @@
         
         "outDir"             : "../out",
         "module"             : "commonjs",
-        "moduleResolution"   : "node"
+        "moduleResolution"   : "node",
+        "allowUnreachableCode": true
 	}
 }

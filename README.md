@@ -1,10 +1,12 @@
-# VSCode Musashi Framework Duktape Debug Adapter
+# Musashi Framework VSCode Debugger for Duktape
 
 ## Greetings
 Greetings! And peace be with you in the name of our Lord Yeshua, the Messiah.
 
 ## Description
 A debug adapter for Visual Studio Code written in Typescript targeting [Duktape](https://github.com/svaarala/duktape) runtimes. It implements the VS Code Debug Protocol (or CDP),
+
+<img src="./img/musa-debug.gif" />
 
 See: 
  - [https://code.visualstudio.com/docs/extensions/overview](https://code.visualstudio.com/docs/extensions/overview)
@@ -22,6 +24,8 @@ The client-side features include:
  - Closure and globals inspection. (custom command on the runtime).
  - Console input evals.
  - Artificial property display.
+ - Source map support. \**inlined currently unsupported*\*
+ 
  
 *It does not currently support inspection of Proxy objects.*
  

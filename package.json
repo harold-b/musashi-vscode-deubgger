@@ -31,7 +31,8 @@
     "typescript": "^1.7.3",
     "gulp-tsb": "*",
     "gulp-tslint": "^4.3.2",
-    "run-sequence": "~1.1.5"
+    "run-sequence": "~1.1.5",
+    "del": "~2.2.0"
   },
   "contributes": {
     "debuggers": [
