@@ -1,8 +1,8 @@
 
 import {
-	DebugSession, Thread, Source, StackFrame, Scope, Variable, Breakpoint,
-	TerminatedEvent, InitializedEvent, StoppedEvent, OutputEvent,
-	Handles, ErrorDestination
+    DebugSession, Thread, Source, StackFrame, Scope, Variable, Breakpoint,
+    TerminatedEvent, InitializedEvent, StoppedEvent, OutputEvent,
+    Handles, ErrorDestination
 } from 'vscode-debugadapter';
 
 import {
@@ -48,56 +48,56 @@ import * as Duk from "./DukConsts";
  * Arguments shared between Launch and Attach requests.
  */
 export interface CommonArguments {
-	/** comma separated list of trace selectors. Supported:
-	 * 'all': all
-	 * 'la': launch/attach
-	 * 'bp': breakpoints
-	 * 'sm': source maps
-	 * */
-	trace?: string;
-	/** Automatically stop target after launch. If not specified, target does not stop. */
-	stopOnEntry?: boolean;
-	/** Configure source maps. By default source maps are disabled. */
-	sourceMaps?: boolean;
-	/** Where to look for the generated code. Only used if sourceMaps is true. */
-	outDir?: string;
+    /** comma separated list of trace selectors. Supported:
+     * 'all': all
+     * 'la': launch/attach
+     * 'bp': breakpoints
+     * 'sm': source maps
+     * */
+    trace?: string;
+    /** Automatically stop target after launch. If not specified, target does not stop. */
+    stopOnEntry?: boolean;
+    /** Configure source maps. By default source maps are disabled. */
+    sourceMaps?: boolean;
+    /** Where to look for the generated code. Only used if sourceMaps is true. */
+    outDir?: string;
 }
 
 /**
  * This interface should always match the schema found in the node-debug extension manifest.
  */
 export interface LaunchRequestArguments extends CommonArguments {
-	/** An absolute path to the program to debug. */
-	program: string;
-	/** Optional arguments passed to the debuggee. */
-	args?: string[];
-	/** Launch the debuggee in this working directory (specified as an absolute path). If omitted the debuggee is lauched in its own directory. */
-	cwd?: string;
-	/** Absolute path to the runtime executable to be used. Default is the runtime executable on the PATH. */
-	runtimeExecutable?: string;
-	/** Optional arguments passed to the runtime executable. */
-	runtimeArgs?: string[];
-	/** Optional environment variables to pass to the debuggee. The string valued properties of the 'environmentVariables' are used as key/value pairs. */
-	env?: { [key: string]: string; };
-	/** If true launch the target in an external console. */
-	externalConsole?: boolean;
+    /** An absolute path to the program to debug. */
+    program: string;
+    /** Optional arguments passed to the debuggee. */
+    args?: string[];
+    /** Launch the debuggee in this working directory (specified as an absolute path). If omitted the debuggee is lauched in its own directory. */
+    cwd?: string;
+    /** Absolute path to the runtime executable to be used. Default is the runtime executable on the PATH. */
+    runtimeExecutable?: string;
+    /** Optional arguments passed to the runtime executable. */
+    runtimeArgs?: string[];
+    /** Optional environment variables to pass to the debuggee. The string valued properties of the 'environmentVariables' are used as key/value pairs. */
+    env?: { [key: string]: string; };
+    /** If true launch the target in an external console. */
+    externalConsole?: boolean;
 }
 
 /**
  * This interface should always match the schema found in the node-debug extension manifest.
  */
 export interface AttachRequestArguments extends CommonArguments {
-	/** The debug port to attach to. */
-	port: number;
-	/** The TCP/IP address of the port (remote addresses only supported for node >= 5.0). */
-	address?: string;
-	/** Retry for this number of milliseconds to connect to the node runtime. */
-	timeout?: number;
+    /** The debug port to attach to. */
+    port: number;
+    /** The TCP/IP address of the port (remote addresses only supported for node >= 5.0). */
+    address?: string;
+    /** Retry for this number of milliseconds to connect to the node runtime. */
+    timeout?: number;
 
-	/** Node's root directory. */
-	remoteRoot?: string;
-	/** VS Code's root directory. */
-	localRoot?: string;
+    /** Node's root directory. */
+    remoteRoot?: string;
+    /** VS Code's root directory. */
+    localRoot?: string;
 }
 
 // Utitity
@@ -274,7 +274,7 @@ class ErrorCode
 
 class DukDebugSession extends DebugSession
 {
-	private static THREAD_ID = 1;
+    private static THREAD_ID = 1;
     
        
     private _launchArgs:LaunchRequestArguments;
@@ -299,19 +299,19 @@ class DukDebugSession extends DebugSession
     
   
     //-----------------------------------------------------------
-	public constructor()
+    public constructor()
     {
-		super();
+        super();
         this.logToClient( "DukDebugSession()" );
 
-		// this debugger uses zero-based lines and columns
-		this.setDebuggerLinesStartAt1   ( true );
-		this.setDebuggerColumnsStartAt1 ( true );
+        // this debugger uses zero-based lines and columns
+        this.setDebuggerLinesStartAt1   ( true );
+        this.setDebuggerColumnsStartAt1 ( true );
         
         this._dbgState = new DbgClientState();
         
         this.initDukDbgProtocol();
-	}
+    }
     
     //-----------------------------------------------------------
     private initDukDbgProtocol() : void
@@ -444,25 +444,25 @@ class DukDebugSession extends DebugSession
         this.sendEvent( new InitializedEvent() );
     }
     
-/// DebugSession
+    /// DebugSession
     //-----------------------------------------------------------
-	// The 'initialize' request is the first request called by the frontend
-	// to interrogate the features the debug adapter provides.
+    // The 'initialize' request is the first request called by the frontend
+    // to interrogate the features the debug adapter provides.
     //-----------------------------------------------------------
-	protected initializeRequest( response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments ): void
+    protected initializeRequest( response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments ): void
     {
         this.logToClient( "initializeRequest." );
         
-		// This debug adapter implements the configurationDoneRequest.
-		response.body.supportsConfigurationDoneRequest = true;
+        // This debug adapter implements the configurationDoneRequest.
+        response.body.supportsConfigurationDoneRequest = true;
         response.body.supportsFunctionBreakpoints      = false;
         response.body.supportsEvaluateForHovers        = true;
         
-		this.sendResponse( response );
-	}
+        this.sendResponse( response );
+    }
     
     //-----------------------------------------------------------
-	protected launchRequest( response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments ) : void
+    protected launchRequest( response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments ) : void
     {
         this.logToClient( "launchRequest" );
         return;
@@ -481,19 +481,19 @@ class DukDebugSession extends DebugSession
         
         //this.init();
 
-		if( args.stopOnEntry ) 
+        if( args.stopOnEntry ) 
         {
-			this.sendResponse( response );
+            this.sendResponse( response );
 
-			// we stop on the first line
-			//this.sendEvent( new StoppedEvent( "entry", DukDebugSession.THREAD_ID ) );
-		} 
+            // we stop on the first line
+            //this.sendEvent( new StoppedEvent( "entry", DukDebugSession.THREAD_ID ) );
+        } 
         else
         {
-			// we just start to run until we hit a breakpoint or an exception
-			this.continueRequest( response, { threadId: DukDebugSession.THREAD_ID } );
-		}
-	}
+            // we just start to run until we hit a breakpoint or an exception
+            this.continueRequest( response, { threadId: DukDebugSession.THREAD_ID } );
+        }
+    }
     
     //-----------------------------------------------------------
     protected attachRequest( response: DebugProtocol.AttachResponse, args: AttachRequestArguments ) : void
@@ -1120,7 +1120,7 @@ class DukDebugSession extends DebugSession
         
     }
 
-/// Private
+    /// Private
     
     //-----------------------------------------------------------
     // Clear all breakpoints for a source file

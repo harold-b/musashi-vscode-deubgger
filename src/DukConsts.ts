@@ -313,13 +313,12 @@
         }
 
     }
+    
     export class Property
     {
         flags :number;
         key   :string | number;
         value :DValueUnion;
     }
-
-
 
 //} // End NS
