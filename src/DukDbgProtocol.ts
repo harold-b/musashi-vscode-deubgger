@@ -176,23 +176,26 @@ export class DukResponse extends DukProtoMessage
 
 export class DukBasicInfoResponse extends DukResponse
 {
-    // REP <int: DUK_VERSION> <str: DUK_GIT_DESCRIBE> <str: target info> <int: endianness> EOM
+    // REP <int: DUK_VERSION> <str: DUK_GIT_DESCRIBE> <str: target info> 
+    //     <int: endianness> <int: sizeof(void *)> EOM
     public version    :number;
     public gitDesc    :string;
     public targetInfo :string;
     public endianness :DukEndianness;
+    public ptrSize    :number;
     
     constructor( msg:DukDvalueMsg )
     {
         super( Duk.CmdType.BASICINFO );
         
-        if( msg.length != 6 )
+        if( msg.length != 7 )
             throw new Error( "Invalid 'BasicInfo' response message." );
         
         this.version    = <number>msg[1].value;
         this.gitDesc    = <string>msg[2].value;
         this.targetInfo = <string>msg[3].value;
         this.endianness = <DukEndianness>msg[4].value;
+        this.ptrSize    = <number>msg[5].value;
         
         if( this.endianness < DukEndianness.Little ||
             this.endianness > DukEndianness.Big )
@@ -349,27 +352,32 @@ export class DukEvalResponse extends DukResponse
     }
 }
 
-export class DukInspectHeapObjResponse extends DukResponse
+export class DukGetHeapObjInfoResponse extends DukResponse
 {
     public properties:Duk.Property[];
 
+    // REQ <int: 0x23> <tval: heapptr|object|pointer> EOM
+    // REP [int: flags> <str/int: key> [<tval: value> OR <obj: getter> <obj: setter>]]* EOM
     constructor( msg:DukDvalueMsg )
     {
-        super( Duk.CmdType.INSPECTHEAPOBJ );
+        super( Duk.CmdType.GETHEAPOBJINFO );
 
         assert( msg.length >= 2 );
 
-        let numProps = (msg.length - 2) / 3;
-        this.properties = new Array<Duk.Property>( numProps );
+        this.properties = new Array<Duk.Property>();
 
-        for( let i=1, j=0; i < msg.length-1; i+=3, j++ )
+        for( let i=1; i < msg.length-1; )
         {
             let prop = new Duk.Property();
-            prop.flags = <number>msg[i].value;
-            prop.key   = <number|string>msg[i+1].value;
-            prop.value = <any>msg[i+2].value;
+            prop.flags = <number>       msg[i++].value;
+            prop.key   = <number|string>msg[i++].value;
+            prop.value = <any>          msg[i++].value;
+
+            // If it's ann accessor, we must parse 2 values
+            if( prop.flags & Duk.PropDescFlag.ATTR_ACCESSOR )
+                prop.value = <any>[ prop.value, <any>msg[i++].value];
             
-            this.properties[j] = prop;
+            this.properties.push( prop );
         }
     }
     
@@ -621,8 +629,6 @@ class DukMsgBuilder
     }
 }
 
-
-
 class PromiseContext
 {
     public resolve :Function;
@@ -675,7 +681,7 @@ enum State
 export class DukDbgProtocol extends EE.EventEmitter
 {
 
-    private static OUT_BUF_SIZE :number  = 1024*1;   // Resizable
+    private static OUT_BUF_SIZE :number  = 1024*1;  // Resizable
     private static IN_BUF_SIZE  :number = 1024*16;  // Fixed
 
     private _state          :State = State.Offline;
@@ -930,14 +936,16 @@ export class DukDbgProtocol extends EE.EventEmitter
 
         this._outBuf.clear();
         this._outBuf.writeREQ();
-        this._outBuf.writeInt( Duk.CmdType.INSPECTHEAPOBJ );
+        this._outBuf.writeInt( Duk.CmdType.GETHEAPOBJINFO );
         this._outBuf.writePointer( ptr );
         this._outBuf.writeInt( flags );
         this._outBuf.writeEOM();
 
-        return this.sendRequest( Duk.CmdType.INSPECTHEAPOBJ, this._outBuf.finish() );
+        return this.sendRequest( Duk.CmdType.GETHEAPOBJINFO, this._outBuf.finish() );
     }
 
+    //-----------------------------------------------------------
+    // This request is Musashi-specific.
     //-----------------------------------------------------------
     public requestClosures( stackDepth:number = -1 ) : Promise<any>
     {
@@ -949,7 +957,6 @@ export class DukDbgProtocol extends EE.EventEmitter
         
         return this.sendRequest( Duk.CmdType.GETCLOSURES, this._outBuf.finish() );
     }
-
 
     //-----------------------------------------------------------
     private sendSimpleRequest( cmd:number ) : Promise<any>
@@ -1465,7 +1472,7 @@ export class DukDbgProtocol extends EE.EventEmitter
         switch( ib )
         {
             default :
-                this.log( "warning: Received unknown message type: 0x" + (<number>ib).toString(16) +". Discarding." );
+                this.log( `warning: Received unknown message type: 0x${(<number>ib).toString(16)}. Discarding.` );
                 return;
             case Duk.MsgType.EOM :
                 this.log( "warning: Received empty message, discarding." );
@@ -1526,6 +1533,10 @@ export class DukDbgProtocol extends EE.EventEmitter
                     let reason = `Target detached: ( ${msg[2].value} )  ${msg[3].value}`;
                     this.disconnect( reason );
                 }
+                break;
+
+                case Duk.NotifyType.APP_MSG:
+                    throw new Error( "Unimplemented" );
                 break;
             }
         }
@@ -1627,8 +1638,20 @@ export class DukDbgProtocol extends EE.EventEmitter
                         throw new Error( "Unimplemented" );
                     break;
 
-                    case Duk.CmdType.INSPECTHEAPOBJ :
-                        value = new DukInspectHeapObjResponse( msg );
+                    case Duk.CmdType.APPCOMMAND     :
+                        throw new Error( "Unimplemented" );
+                    break;
+
+                    case Duk.CmdType.GETHEAPOBJINFO :
+                        value = new DukGetHeapObjInfoResponse( msg );
+                    break;
+
+                    case Duk.CmdType.GETOBJPROPDESC :
+                        throw new Error( "Unimplemented" );
+                    break;
+
+                    case Duk.CmdType.GETOBJPROPDESCRANGE :
+                        throw new Error( "Unimplemented" );
                     break;
 
                     case Duk.CmdType.GETCLOSURES    :

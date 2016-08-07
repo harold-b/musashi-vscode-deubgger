@@ -1,4 +1,5 @@
 
+// Please see: https://github.com/svaarala/duktape/blob/master/doc/debugger.rst
 //namespace Duk {
 
     export enum MsgType
@@ -10,6 +11,7 @@
         NFY = 0x04,     // Start of notification message
     }
 
+    // DValue initial bytes
     export enum DvalIB
     {
         // Message types
@@ -54,42 +56,36 @@
         ALERT     = 0x03,
         LOG       = 0x04,
         THROW     = 0x05,
-        DETACHING = 0x06
+        DETACHING = 0x06,
+        APP_MSG   = 0x07    // Application-specific notification. Added on v1.5.0
     }
 
     /// Commands initiated by the client ( our end )
     export enum CmdType
     {
-        BASICINFO      = 0x10,
-        TRIGGERSTATUS  = 0x11,
-        PAUSE          = 0x12,
-        RESUME         = 0x13,
-        STEPINTO       = 0x14,
-        STEPOVER       = 0x15,
-        STEPOUT        = 0x16,
-        LISTBREAK      = 0x17,
-        ADDBREAK       = 0x18,
-        DELBREAK       = 0x19,
-        GETVAR         = 0x1a,
-        PUTVAR         = 0x1b,
-        GETCALLSTACK   = 0x1c,
-        GETLOCALS      = 0x1d,
-        EVAL           = 0x1e,
-        DETACH         = 0x1f,
-        DUMPHEAP       = 0x20,
-        GETBYTECODE    = 0x21,
-        AppCommand     = 0x23,
-        INSPECTHEAPOBJ = 0x23,
-        GARBAGECOLLECT = 0x24,
-        GETCLOSURES    = 0x25,  // Test value
-    }
-
-    export enum ErrorType
-    {
-        UNKNOWN       = 0x00,
-        UNSUPPORTED   = 0x01,
-        TOOMANY       = 0x02,
-        NOTFOUND      = 0x03
+        BASICINFO           = 0x10,
+        TRIGGERSTATUS       = 0x11,
+        PAUSE               = 0x12,
+        RESUME              = 0x13,
+        STEPINTO            = 0x14,
+        STEPOVER            = 0x15,
+        STEPOUT             = 0x16,
+        LISTBREAK           = 0x17,
+        ADDBREAK            = 0x18,
+        DELBREAK            = 0x19,
+        GETVAR              = 0x1a,
+        PUTVAR              = 0x1b,
+        GETCALLSTACK        = 0x1c,
+        GETLOCALS           = 0x1d,
+        EVAL                = 0x1e,
+        DETACH              = 0x1f,
+        DUMPHEAP            = 0x20,
+        GETBYTECODE         = 0x21,
+        APPCOMMAND          = 0x22,
+        GETHEAPOBJINFO      = 0x23,
+        GETOBJPROPDESC      = 0x24,
+        GETOBJPROPDESCRANGE = 0x25,
+        GETCLOSURES         = 0xF7,  // Musashi-specific
     }
 
     export enum PropDescFlag
@@ -99,15 +95,24 @@
         ATTR_CONFIGURABLE = 0x04,
         ATTR_ACCESSOR     = 0x08,
         VIRTUAL           = 0x10,
-        INTERNAL          = 0x100,
-        ARTIFICIAL        = 0x200,
+        INTERNAL          = 0x100
+    }
+
+    export enum ErrorType
+    {
+        UNKNOWN       = 0x00,
+        UNSUPPORTED   = 0x01,
+        TOOMANY       = 0x02,
+        NOTFOUND      = 0x03,
+        APP_ERROR     = 0x04
     }
         
     export var ERR_TYPE_MAP:Array<string> = [
         "Unknown or unspecified error",
         "Unsupported command",
         "Too many",
-        "Not found"
+        "Not found",
+        "Application error (e.g. AppRequest-related error)"
     ];
     
     /// Primitive DValue kinds
@@ -311,7 +316,6 @@
             this.type  = type ;
             this.value = value;
         }
-
     }
     
     export class Property

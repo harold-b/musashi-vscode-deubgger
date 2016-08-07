@@ -36,7 +36,7 @@ import {
     DukCallStackEntry,
     DukGetLocalsResponse,
     DukEvalResponse,
-    DukInspectHeapObjResponse,
+    DukGetHeapObjInfoResponse,
     DukGetClosureResponse
    
 } from "./DukDbgProtocol";
@@ -1272,7 +1272,7 @@ class DukDebugSession extends DebugSession
             
             // Inspect the object
             return this._dukProto.requestInspectHeapObj( propSet.heapPtr )
-            .then( ( r:DukInspectHeapObjResponse ) => {
+            .then( ( r:DukGetHeapObjInfoResponse ) => {
                 
                 // Split into internal properties and object properties
                 let numInternal = r.numInternalProps();
@@ -1438,7 +1438,7 @@ class DukDebugSession extends DebugSession
         return this._dukProto.requestInspectHeapObj( targetPtr, 0 )
         
         // Find proto type first
-        .then( ( r:DukInspectHeapObjResponse ) => {
+        .then( ( r:DukGetHeapObjInfoResponse ) => {
             
             let proto = ArrayX.firstOrNull( r.properties, (v) => v.key == "internal_prototype" );
             if( !proto )
@@ -1446,7 +1446,7 @@ class DukDebugSession extends DebugSession
                 
              // Find constructor property
             return this._dukProto.requestInspectHeapObj( (<Duk.TValObject>proto.value).ptr, 0 )
-            .then( ( r:DukInspectHeapObjResponse ) => {
+            .then( ( r:DukGetHeapObjInfoResponse ) => {
                 
                 let ctorProp = ArrayX.firstOrNull( r.properties, (v) => v.key == "constructor" );
                 if( !ctorProp )
@@ -1454,7 +1454,7 @@ class DukDebugSession extends DebugSession
                     
                 // Find name property
                 return this._dukProto.requestInspectHeapObj( (<Duk.TValObject>ctorProp.value).ptr, 0 )
-                .then( ( r:DukInspectHeapObjResponse ) => {
+                .then( ( r:DukGetHeapObjInfoResponse ) => {
                     
                     let nameProp = ArrayX.firstOrNull( r.properties, (v) => v.key == "name" );
                     if( !nameProp )
