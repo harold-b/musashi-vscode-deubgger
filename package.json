@@ -1,83 +1,115 @@
 {
-  "name": "musa-debug",
-  "displayName": "Musashi Debug",
-  "version": "0.1.0",
-  "publisher": "Harold Brenes",
-  "description": "Visual Studio Code debug adapter for Duktape on the Musashi Framework.",
+  "name"        : "musa-debug",
+  "displayName" : "Musashi Debug",
+  "version"     : "0.2.0",
+  "publisher"   : "Harold Brenes",
+  "description" : "Visual Studio Code debug adapter for Duktape on the Musashi Framework.",
   "author": {
     "name": "Harold Brenes"
   },
-  "license": "Private",
-  "private": true,
-  "engines": {
-    "vscode": "~0.10.8"
+
+  "license" : "Private",
+  "private" : true,
+  "engines" : {
+    "vscode" : "^1.1.0",
+    "node"   : "^5.10.0"
   },
+
   "categories": [
     "Debuggers"
   ],
+
   "bugs": {
-    "url": "http://hbrenes.com/blog"
+    "url": "http://hbrenes.com/cv"
   },
+
   "dependencies": {
+    "vscode-debugprotocol": "^1.11.0-pre.8",
+		"vscode-debugadapter": "^1.11.0-pre.6",
     "process": "^0.11.2",
     "source-map": "0.5.3",
     "utf8": "~2.0.0",
-    "util": "~0.10.3",
-    "vscode-debugadapter": "~1.6.0-pre8",
-    "vscode-debugprotocol": "~1.6.0-pre4"
+    "util": "~0.10.3"
   },
+
   "devDependencies": {
     "gulp": "^3.9.0",
-    "typescript": "^1.7.3",
     "gulp-tsb": "*",
     "gulp-tslint": "^4.3.2",
+    "typescript": "^1.7.3",
+    "vscode": "^0.11.13",
+		"vscode-debugadapter-testsupport": "^1.11.0",
     "run-sequence": "~1.1.5",
     "del": "~2.2.0"
   },
+
+  "scripts": {
+		"postinstall": "node ./node_modules/vscode/bin/install"
+	},
+
+  "main": "./out/extension",
+	"activationEvents": [
+		"onCommand:extension.runDukDebugger"
+	],
+
   "contributes": {
+    "breakpoints": [
+			{
+				"language": "javascript"
+			},
+      {
+				"language": "typescript"
+			}
+		],
+
     "debuggers": [
       {
         "type": "duk",
-        "label": "JS Duktape",
+        "label": "Duktape JS",
+
+        "program": "./out/DukDebugger.js",
+        "runtime": "node",
+
         "enableBreakpointsFor": {
           "languageIds": [
             "javascript",
             "typescript"
-          ]
-        },
-        "runtime": "node",
-        "program": "./out/DukDebugger.js",
-        "initialConfigurations": [
+        ]
+      },
+
+      "initialConfigurations": [
           {
-            "name": "Launch",
-            "type": "duk",
-            "request": "launch",
-            "program": "${workspaceRoot}/main.js",
-            "args": [],
-            "cwd": "${workspaceRoot}",
-            "preLaunchTask": "",
-            "runtimeExecutable": null,
-            "env": {},
-            "externalConsole": false
+            "name"              : "Launch",
+            "type"              : "duk",
+            "request"           : "launch",
+            "program"           : "${workspaceRoot}/main.js",
+            "args"              : [],
+            "cwd"               : "${workspaceRoot}",
+            "preLaunchTask"     : "",
+            "runtimeExecutable" : null,
+            "env"               : {},
+            "externalConsole"   : false
           },
           {
-            "name": "Attach",
-            "type": "duk",
-            "request": "attach",
-            "address": "localhost",
-            "port": 27559,
-            "localRoot": "${workspaceRoot}",
-            "remoteRoot": null,
-            "sourceMaps": false,
-            "stopOnEntry": false,
-            "outDir": null
+            "name"        : "Attach",
+            "type"        : "duk",
+            "request"     : "attach",
+            "address"     : "localhost",
+            "port"        : 9091,
+            "localRoot"   : "${workspaceRoot}",
+            "remoteRoot"  : null,
+            "sourceMaps"  : false,
+            "stopOnEntry" : false,
+            "outDir"      : null
           }
         ],
+
         "configurationAttributes": {
           "launch": {
             "required": [
               "program"
             ],
+
             "properties": {
               "program": {
                 "type": "string",

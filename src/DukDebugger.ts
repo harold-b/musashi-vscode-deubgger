@@ -1,7 +1,7 @@
 
 import {
     DebugSession, Thread, Source, StackFrame, Scope, Variable, Breakpoint,
-    TerminatedEvent, InitializedEvent, StoppedEvent, OutputEvent,
+    TerminatedEvent, InitializedEvent, StoppedEvent, ContinuedEvent, OutputEvent,
     Handles, ErrorDestination
 } from 'vscode-debugadapter';
 
@@ -61,6 +61,9 @@ export interface CommonArguments {
     sourceMaps?: boolean;
     /** Where to look for the generated code. Only used if sourceMaps is true. */
     outDir?: string;
+
+    // For musashi-specific builds
+    isMusashi?: boolean;
 }
 
 /**
@@ -122,13 +125,11 @@ class ArrayX
     }
 }
 
-
 enum LaunchType
 {
     Launch = 0,
     Attach
 }
-
 
 class DukBreakPoint
 {
@@ -321,8 +322,11 @@ class DukDebugSession extends DebugSession
         // Status
         this._dukProto.on( DukEvent[DukEvent.nfy_status], ( status:DukStatusNotification ) => {
             
-            this.logToClient( "Status Notification: " + 
-                (status.state == DukStatusState.Paused ? "pause" : "running") );
+            if( status.state == DukStatusState.Paused )
+                this.logToClient( "Status Notification: PAUSE" );
+
+            //this.logToClient( "Status Notification: " + 
+            //    (status.state == DukStatusState.Paused ? "pause" : "running") );
             
             let stopReason = this._dbgState.expectingBreak == undefined ?
                  "debugger" : this._dbgState.expectingBreak;
@@ -346,6 +350,7 @@ class DukDebugSession extends DebugSession
             if( status.state == DukStatusState.Paused )
             {
                 //this.logToClient( "Pause reported" );
+                this.logToClient( "PAUSED: " + stopReason );
                 this._dbgState.reset();
                 this._dbgState.paused = true;
                 this.sendEvent( new StoppedEvent( stopReason, DukDebugSession.THREAD_ID ) );
@@ -353,8 +358,10 @@ class DukDebugSession extends DebugSession
             else
             {
                 // Resume
+                this.logToClient( "RESUMED" );
                 //this._dbgState.reset();
                 this._dbgState.paused = false;
+                this.sendEvent( new ContinuedEvent( DukDebugSession.THREAD_ID, true) );
                 // TODO: Resume?
             }
         });
@@ -451,20 +458,21 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected initializeRequest( response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments ): void
     {
-        this.logToClient( "initializeRequest." );
+        this.logToClient( "[FE] initializeRequest." );
         
         // This debug adapter implements the configurationDoneRequest.
         response.body.supportsConfigurationDoneRequest = true;
         response.body.supportsFunctionBreakpoints      = false;
         response.body.supportsEvaluateForHovers        = true;
-        
+        response.body.supportsStepBack                 = false;
+
         this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     protected launchRequest( response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments ) : void
     {
-        this.logToClient( "launchRequest" );
+        this.logToClient( "[FE] ilaunchRequest" );
         return;
         
         this.logToClient( "Program : " + args.program );
@@ -491,14 +499,14 @@ class DukDebugSession extends DebugSession
         else
         {
             // we just start to run until we hit a breakpoint or an exception
-            this.continueRequest( response, { threadId: DukDebugSession.THREAD_ID } );
+            //this.continueRequest( response, { threadId: DukDebugSession.THREAD_ID } );
         }
     }
     
     //-----------------------------------------------------------
     protected attachRequest( response: DebugProtocol.AttachResponse, args: AttachRequestArguments ) : void
     {
-        this.logToClient( "attachRequest" );
+        this.logToClient( "[FE] attachRequest" );
         
         this._args          = args;
         this._launchType    = LaunchType.Attach;
@@ -625,7 +633,7 @@ class DukDebugSession extends DebugSession
             // Check if it has a source map
             if( src.srcMapPath )
             {
-                try{
+                try {
                     let result  = this._sourceMaps.MapFromSource( src.path, bp.line, 0, Bias.LEAST_UPPER_BOUND );
                     line = result.line;                    
                 }
@@ -709,7 +717,7 @@ class DukDebugSession extends DebugSession
     // StepOver
     protected nextRequest( response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments ): void
     {
-        this.logToClient( "nextRequest" );
+        this.logToClient( "[FE] nextRequest" );
         
         if( !this._dbgState.paused )
         {
@@ -720,18 +728,20 @@ class DukDebugSession extends DebugSession
         
         this._dukProto.requestStepOver().then( ( val ) => {
             // A status notification should follow shortly
-            this.sendResponse( response );
+            //this.sendResponse( response );
             
         }).catch( (err) => {
-            this.requestFailedResponse( response );
+            //this.requestFailedResponse( response );
         });
+
+        this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     // StepInto
     protected stepInRequest (response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments ): void
     {
-        this.logToClient( "stepInRequest" );
+        this.logToClient( "[FE] stepInRequest" );
         
         if( !this._dbgState.paused )
         {
@@ -742,18 +752,20 @@ class DukDebugSession extends DebugSession
         
         this._dukProto.requestStepInto().then( ( val ) => {
             // A status notification should follow shortly
-            this.sendResponse( response );
+            //this.sendResponse( response );
             
         }).catch( (err) => {
-            this.requestFailedResponse( response );
+            //this.requestFailedResponse( response );
         });
+
+        this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     // StepOut
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void
     {
-        this.logToClient( "stepOutRequest" );
+        this.logToClient( "[FE] stepOutRequest" );
         
         if( !this._dbgState.paused )
         {
@@ -764,31 +776,38 @@ class DukDebugSession extends DebugSession
         
         this._dukProto.requestStepOut().then( ( val ) => {
             // A status notification should follow shortly
-            this.sendResponse( response );
+            //this.sendResponse( response );
             
         }).catch( (err) => {
-            this.requestFailedResponse( response );
+            //this.requestFailedResponse( response );
         });
+
+        // NOTE: This new version seems to cause an error randomly
+        // locking the UI if we send the response later on...
+        // So we send it immediately and just adopt the Server
+        // state when it responds with status messages.
+        this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     protected pauseRequest( response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments ): void
     {
-        this.logToClient( "pauseRequest" );
+        this.logToClient( "[FE] pauseRequest" );
         
         if( !this._dbgState.paused )
         {
-            this._dbgState.expectingBreak = "user request";
+            this._dbgState.expectingBreak = "pause";
             
             this._dukProto.requestPause().then( ( val ) => {
                 
                 // A status notification should follow shortly
-                this.sendResponse( response );
+                //this.sendResponse( response );
                 
             }).catch( (err) => {
-
-                this.requestFailedResponse( response, "Error pausing." );
+                //this.requestFailedResponse( response, "Error pausing." );
             });
+
+            this.sendResponse( response );
         }
         else
         {
@@ -800,7 +819,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected sourceRequest( response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments ): void
     {
-        this.logToClient( "sourceRequest" );
+        this.logToClient( "[FE] sourceRequest" );
         
         let ref = args.sourceReference;
         
@@ -812,7 +831,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected threadsRequest( response: DebugProtocol.ThreadsResponse ): void
     {
-        this.logToClient( "threadsRequest" );
+        this.logToClient( "[FE] threadsRequest" );
         
         response.body = {
             threads:  [ new Thread( DukDebugSession.THREAD_ID, "Main Thread") ]
@@ -830,7 +849,7 @@ class DukDebugSession extends DebugSession
         if( !this._dbgState.paused )
         {
             this.requestFailedResponse( response, 
-                "Attempted to get stack trace while in running." );
+                "Attempted to obtain stack trace while running." );
             return;
         }
         
@@ -853,7 +872,7 @@ class DukDebugSession extends DebugSession
                 if( srcFile )
                     src = new Source( srcFile.name, srcFile.path, srcFile.id );
                 
-                let klsName  = frame.klass == "" ? "" : frame.klass + ".";
+                let klsName  = frame.klass    == "" ? "" : frame.klass + ".";
                 let funcName = frame.funcName == "" ? "(anonymous function)" : frame.funcName + "()";
                 
                 //i: number, nm: string, src: Source, ln: number, col: number
@@ -930,17 +949,26 @@ class DukDebugSession extends DebugSession
     }
     
     //-----------------------------------------------------------
-    protected scopesRequest( response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments ): void
+    protected scopesRequest( response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments ):void
     {
         this.logToClient( "[FE] scopesRequest" );
         assert( this._dbgState.paused );
+
+        /// +TEST
+        this.scopeRequestForLocals( args.frameId, response, args );
+        return;
+
+        //response.body = { scopes: [ new Scope("Locals", 1 )] };
+        //this.sendResponse( response );
+        //return;
+        //// -TEST
         
         const stackFrameHdl = args.frameId;
         let   stackFrame    = this._dbgState.stackFrames.get( stackFrameHdl );
         
         // Prepare DukScope objects
         const names     = [ "Local", "Closure", "Global" ];
-        let   dukScopes = new Array<DukScope>(3);
+        let   dukScopes = new Array<DukScope>( names.length );
         
         for( let i=0; i < names.length; i++ )
         {
@@ -961,7 +989,7 @@ class DukDebugSession extends DebugSession
             let propPromises:Promise<PropertySet>[] = [];
             
             // Append 'this' to local scope, if it's not global
-            return this.isGlobalObjectByName( "this", stackFrame.depth)
+            return this.isGlobalObjectByName( "this", stackFrame.depth )
             .then( (isGlobal:boolean ) => {
                 
                 if( !isGlobal )
@@ -1000,11 +1028,13 @@ class DukDebugSession extends DebugSession
     }
     
     //-----------------------------------------------------------
-    protected variablesRequest( response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments ): void
+    protected variablesRequest( response:DebugProtocol.VariablesResponse, args:DebugProtocol.VariablesArguments ):void
     {
         this.logToClient( "[FE] variablesRequest" );
-        
         assert( args.variablesReference != 0 );
+
+        /// +TEST
+        /// -TEST
         
         var properties = this._dbgState.varHandles.get( args.variablesReference );
         
@@ -1022,7 +1052,7 @@ class DukDebugSession extends DebugSession
         var scope      = properties.scope;
         var stackFrame = scope.stackFrame;
         
-        // Determine the property set reference type
+        // Determine the PropertySet's reference type
         if( properties.type == PropertySetType.Scope )
         {
             // Scope-level variables are resolved at the time of the Scope request
@@ -1044,9 +1074,9 @@ class DukDebugSession extends DebugSession
     }
     
     //-----------------------------------------------------------
-    protected evaluateRequest( response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments ): void
+    protected evaluateRequest( response:DebugProtocol.EvaluateResponse, args:DebugProtocol.EvaluateArguments ):void
     {
-        this.logToClient( "evaluateRequest" );
+        this.logToClient( "[FE] evaluateRequest" );
         
         let x = args.expression;
         if( x.indexOf( "cmd:") == 0 )
@@ -1101,7 +1131,7 @@ class DukDebugSession extends DebugSession
                     
                     let r = <DukEvalResponse>resp;
                     if( !r.success )
-                        this.requestFailedResponse( response, "Failed to find stack frame: " + args.frameId );    
+                        this.requestFailedResponse( response, "Eval failed: " + r.result );    
                     else
                     {
                         response.body = {
@@ -1112,7 +1142,7 @@ class DukDebugSession extends DebugSession
                     }
                     
                 }).catch( err =>{
-                    this.requestFailedResponse( response, "Failed to find stack frame: " + args.frameId );
+                    this.requestFailedResponse( response, "Eval request failed: " + err );
                 });
                 
             return;
@@ -1120,7 +1150,57 @@ class DukDebugSession extends DebugSession
         
     }
 
-    /// Private
+/// Private
+    //-----------------------------------------------------------
+    // For non-musashi versions, we only support obtaining
+    // the local vars as given by duktape.
+    //-----------------------------------------------------------
+    private scopeRequestForLocals( stackFrameHdl:number, response:DebugProtocol.ScopesResponse, args:DebugProtocol.ScopesArguments ):void
+    {
+        let stackFrame  = this._dbgState.stackFrames.get( stackFrameHdl );
+        let dukScope    = new DukScope( "Local", stackFrame, null );
+        dukScope.handle = this._dbgState.scopes.create( dukScope );
+        stackFrame.scopes = [ dukScope ];
+        
+        var scopes:Scope[] = [];
+
+        this._dukProto.requestLocalVariables( stackFrame.depth )
+        .then( ( r:DukGetLocalsResponse ) => {
+
+            // We only care for the names of the local vars
+            let keys = ArrayX.convert( r.vars, v => v.name );
+
+            // Append 'this' to local scope, if it's not global
+            return this.isGlobalObjectByName( "this", stackFrame.depth )
+            .then( (isGlobal:boolean ) => {
+                
+                if( !isGlobal )
+                    keys.unshift( "this" );
+
+                return this.expandScopeProperties( keys, dukScope )
+                .then( (props:PropertySet) => {
+                    scopes.push( new Scope( props.scope.name, props.handle, false ) );
+                });
+            });
+            
+        })
+        .then( () =>{
+            response.body = { scopes: scopes };
+            this.sendResponse( response );
+        })
+        .catch( err => {
+            this.logToClient( "scopesRequest (Locals) failed: " + err );
+            response.body = { scopes: [] };
+        });
+    }
+
+    //-----------------------------------------------------------
+    // Musashi-specific mod
+    //-----------------------------------------------------------
+    private scopeRequestByClosure( response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments ):void
+    {
+        
+    }
     
     //-----------------------------------------------------------
     // Clear all breakpoints for a source file
@@ -1643,14 +1723,14 @@ return JSON.stringify( { n:\"${name}\",t:t,v:v } );
                 return val;   
         }
         
-        let path = this.normPath( Path.join( this._sourceRoot, name ) );
-        if( !FS.existsSync( path ) )
+        let fpath = this.normPath( Path.join( this._sourceRoot, name ) );
+        if( !FS.existsSync( fpath ) )
             return null;
         
         let src:SourceFile = new SourceFile();
         src.id   = this._dbgState.nextSrcID ++;
         src.name = name;
-        src.path = path;
+        src.path = fpath;
         
         // Grab the source map, if it has any
         try { this.checkForSourceMap( src );
@@ -1670,14 +1750,14 @@ return JSON.stringify( { n:\"${name}\",t:t,v:v } );
     }
     
     //-----------------------------------------------------------
-    private getSourceNameByPath( path:string ) : string
+    private getSourceNameByPath( fpath:string ) : string
     {
-        path = this.normPath( path );
+        fpath = this.normPath( fpath );
                 
-        if( path.indexOf( this._sourceRoot ) != 0 )
+        if( fpath.indexOf( this._sourceRoot ) != 0 )
             return undefined;
         
-        return path.substr( this._sourceRoot.length+1 );
+        return fpath.substr( this._sourceRoot.length+1 );
     }
 
     //-----------------------------------------------------------
@@ -1699,11 +1779,13 @@ return JSON.stringify( { n:\"${name}\",t:t,v:v } );
     }
     
     //-----------------------------------------------------------
-    private normPath( path:string ) : string
+    private normPath( fpath:string ) : string
     {
-        path = Path.normalize( path );
-        path = path.replace(/\\/g, '/');
-        return path;
+        if( !fpath )fpath = "";
+
+        fpath = Path.normalize( fpath );
+        fpath = fpath.replace(/\\/g, '/');
+        return fpath;
     }
 
 }

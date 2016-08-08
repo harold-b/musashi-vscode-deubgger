@@ -12,7 +12,8 @@ import * as assert from "assert"      ;
 import * as Duk    from "./DukConsts" ;
 import * as os     from "os"          ;
 
-const MSG_TRACING:boolean = true;
+const MSG_TRACING      :boolean = true;
+const LOG_STATUS_NOTIFY:boolean = false;
 
 export const enum DukStatusState
 {
@@ -273,7 +274,8 @@ export class DukGetCallStackResponse extends DukResponse
 
 export class DukGetLocalsResponse extends DukResponse
 {
-    public vars:any[] = [];
+    // REP [ <str: varName> <tval: varValue> ]* EOM
+    public vars:{name:string, value:any}[] = [];
 
     constructor( msg:DukDvalueMsg )
     {
@@ -1460,13 +1462,18 @@ export class DukDbgProtocol extends EE.EventEmitter
         // Print incoming message
         if( MSG_TRACING )
         {
-            let mStr = "IN <- ";
-            for( let i=0; i < msg.length; i++ )
+            if( LOG_STATUS_NOTIFY ||
+                ( msg[0].value != Duk.MsgType.NFY ||
+                  msg[1].value != Duk.NotifyType.STATUS ) )
             {
-                let dval = msg[i];
-                mStr += `<${Duk.DValKind[dval.type]}: ${String(dval.value)}> `;
-            }
-            this.log( mStr );
+                let mStr = "IN <- ";
+                for( let i=0; i < msg.length; i++ )
+                {
+                    let dval = msg[i];
+                    mStr += `<${Duk.DValKind[dval.type]}: ${String(dval.value)}> `;
+                }
+                this.log( mStr );
+            }            
         }
 
         switch( ib )

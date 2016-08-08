@@ -10,16 +10,17 @@
 			"sourceMaps"        : true,
 			"outDir"            : "${workspaceRoot}/out",
             
-            "preLaunchTask"     : "tsc",
+            //"preLaunchTask"     : "tsc",
             
 			"args": [
-				"--extensionDevelopmentPath=${workspaceRoot}"
+				"--extensionDevelopmentPath=${workspaceRoot}",
+				"--server=4711"
 			]
 		},
         
         
         {
-            //"preLaunchTask"     : "tsc",
+            "preLaunchTask"     : "tsc",
             
 			"name"        : "DukDebug server",
 			"type"        : "node",
