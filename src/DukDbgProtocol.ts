@@ -366,7 +366,7 @@ export class DukGetHeapObjInfoResponse extends DukResponse
 
         assert( msg.length >= 2 );
 
-        this.properties = new Array<Duk.Property>();
+        this.properties = [];
 
         for( let i=1; i < msg.length-1; )
         {
@@ -383,18 +383,54 @@ export class DukGetHeapObjInfoResponse extends DukResponse
         }
     }
     
-    public numInternalProps() : number
+    // Returns the maximum number of properties 'own'
+    // the object my have. The object is not guaranteed
+    // to have this many properties, but might have less or none.
+    // We obtain this by obtaining how many properties the
+    // entry part and the array part can contain.
+    // We do this by examining the "e_next" and a_size" artificial properties.
+    // We add them both and that is our maximum possible number of properties 
+    // that the object may have.
+    // See the following docs:
+    // https://github.com/svaarala/duktape/blob/v1.5.0/doc/debugger.rst
+    // https://github.com/svaarala/duktape/blob/v1.5.0/doc/hobject-design.rst
+    public get maxPropDescRange() : number
     {
+        let e_next:Duk.Property, a_size:Duk.Property;
+
         for( let i = 0; i < this.properties.length; i++ )
         {
-            let p = this.properties[i];
-            if( p.key == "h_size" )
-                return i+1;
+            if( this.properties[i].key == "e_next" ) {
+                e_next = this.properties[i]; 
+                break;
+            }
         }
-        
-        return this.properties.length;
+
+        for( let i = 0; i < this.properties.length; i++ )
+        {
+            if( this.properties[i].key == "a_size" ) {
+                a_size = this.properties[i]; 
+                break;
+            }
+        }
+
+        return <number>e_next.value + <number>a_size.value;
     }
 }
+
+// REQ <int: 0x25> <obj: target> <int: idx_start> <int: idx_end> EOM
+// REP [<int: flags> <str/int: key> [<tval: value> OR <obj: getter> <obj: setter>]]* EOM
+
+// Response is in the same format as DukGetHeapObjInfoResponse
+export class DukGetObjPropDescRangeResponse extends DukGetHeapObjInfoResponse
+{
+    constructor( msg:DukDvalueMsg )
+    {
+        super( msg );
+        this.cmd = Duk.CmdType.GETOBJPROPDESCRANGE;
+    }
+}
+
 
 export class DukGetClosureResponse extends DukResponse
 {
@@ -946,6 +982,26 @@ export class DukDbgProtocol extends EE.EventEmitter
         return this.sendRequest( Duk.CmdType.GETHEAPOBJINFO, this._outBuf.finish() );
     }
 
+    //-----------------------------------------------------------
+    public requestGetObjPropDescRange( ptr:Duk.TValPointer, idxStart:number, idxEnd:number ) : Promise<any>
+    {
+        if( !ptr || ( !ptr.lopart && !ptr.hipart ) )
+        {
+            this.log( "requestGetObjPropDescRange: Warning pointer was NULL" );
+            return Promise.reject( null );
+        }
+
+        this._outBuf.clear();
+        this._outBuf.writeREQ();
+        this._outBuf.writeInt( Duk.CmdType.GETOBJPROPDESCRANGE );
+        this._outBuf.writePointer( ptr );
+        this._outBuf.writeInt( idxStart );
+        this._outBuf.writeInt( idxEnd );
+        this._outBuf.writeEOM();
+
+        return this.sendRequest( Duk.CmdType.GETOBJPROPDESCRANGE, this._outBuf.finish() );
+    }
+    
     //-----------------------------------------------------------
     // This request is Musashi-specific.
     //-----------------------------------------------------------
@@ -1658,7 +1714,7 @@ export class DukDbgProtocol extends EE.EventEmitter
                     break;
 
                     case Duk.CmdType.GETOBJPROPDESCRANGE :
-                        throw new Error( "Unimplemented" );
+                        value = new DukGetObjPropDescRangeResponse( msg );
                     break;
 
                     case Duk.CmdType.GETCLOSURES    :

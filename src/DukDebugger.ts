@@ -37,6 +37,7 @@ import {
     DukGetLocalsResponse,
     DukEvalResponse,
     DukGetHeapObjInfoResponse,
+    DukGetObjPropDescRangeResponse,
     DukGetClosureResponse
    
 } from "./DukDbgProtocol";
@@ -160,19 +161,6 @@ class SourceFile
     }
 }
 
-class DukVar
-{
-    public name       :string;
-    public value      :string;
-    public type       :string;
-    
-    constructor( name:string, value:string )
-    {
-        this.name       = name;
-        this.value      = value;
-    }
-}
-
 type PropertyInfo = { n:string, t:string, v:any };
  
 enum PropertySetType
@@ -184,19 +172,18 @@ enum PropertySetType
 
 class PropertySet
 {
-    public handle    :number;
-    public prefix    :string;
-    public ctorName  :string;   // TODO: Remove prefix, not using it anymore
+    public type        :PropertySetType;
+    public handle      :number;
+    public scope       :DukScope;
+    public displayName :string;
 
     public heapPtr   :Duk.TValPointer;
-    public scope     :DukScope;
-    public type      :PropertySetType;
     public keys      :string[];
     public variables :Variable[];
     
     public constructor( prefix:string, type:PropertySetType )
     {
-        this.prefix = prefix;
+        //this.prefix = prefix;
         this.type   = type;
     }
 }
@@ -278,8 +265,8 @@ class DukDebugSession extends DebugSession
     private static THREAD_ID = 1;
     
        
-    private _launchArgs:LaunchRequestArguments;
-    private _attachArgs:AttachRequestArguments;
+    private _launchArgs     :LaunchRequestArguments;
+    private _attachArgs     :AttachRequestArguments;
     
     private _args           :CommonArguments;
     private _sources        :{};
@@ -337,9 +324,8 @@ class DukDebugSession extends DebugSession
             {
                 if( this._awaitingInitialStatus )
                 {
-                    this._initialStatus = status;
+                    this._initialStatus         = status;
                     this._awaitingInitialStatus = false;
-                    
                 }
                 
                 // Don't act on any stop commands until it responds to the status we asked for
@@ -957,10 +943,6 @@ class DukDebugSession extends DebugSession
         /// +TEST
         this.scopeRequestForLocals( args.frameId, response, args );
         return;
-
-        //response.body = { scopes: [ new Scope("Locals", 1 )] };
-        //this.sendResponse( response );
-        //return;
         //// -TEST
         
         const stackFrameHdl = args.frameId;
@@ -1032,9 +1014,6 @@ class DukDebugSession extends DebugSession
     {
         this.logToClient( "[FE] variablesRequest" );
         assert( args.variablesReference != 0 );
-
-        /// +TEST
-        /// -TEST
         
         var properties = this._dbgState.varHandles.get( args.variablesReference );
         
@@ -1045,7 +1024,7 @@ class DukDebugSession extends DebugSession
             this.sendResponse( response );
             return;
             
-            // TODO: Handle only one request from the front end at a time,
+            // TODO: Perhaps handle only one request from the front end at a time,
             // and perhaps cancel any pending if the state changed/cleared
         }
         
@@ -1315,7 +1294,7 @@ class DukDebugSession extends DebugSession
                                                         //  when the constructor promise returns
                                                         
             // Split into key value pairs, filtering out failed evals
-            let pKeys:string[]            = [];
+            let pKeys  :string[]          = [];
             let pValues:Duk.DValueUnion[] = [];
             
             for( let i = 0; i < results.length; i++ )
@@ -1331,13 +1310,15 @@ class DukDebugSession extends DebugSession
                 return propSet;
             
             return this.resolvePropertySetVariables( pKeys, pValues, propSet );
-            
         })
         .catch( err => {
             return propSet;
         });
     }
     
+    //-----------------------------------------------------------
+    // Takes a PropertySet that is part of parent object and
+    // expands its properties into DebugAdapter Variables2
     //-----------------------------------------------------------
     private expandPropertySubset( propSet:PropertySet ) : Promise<Variable[]>
     {
@@ -1350,43 +1331,57 @@ class DukDebugSession extends DebugSession
             
             propSet.variables = [];
             
-            // Inspect the object
+            // Inspect the object, this will yield a set of 'artificial properties'
+            // which we can use to query the object's 'own' properties
             return this._dukProto.requestInspectHeapObj( propSet.heapPtr )
             .then( ( r:DukGetHeapObjInfoResponse ) => {
                 
-                // Split into internal properties and object properties
-                let numInternal = r.numInternalProps();
-                let numProps    = r.properties.length - numInternal;
+                let numArtificial = r.properties.length;
+                let props         = r.properties;
                 
-                let props        = r.properties.slice( numInternal, r.properties.length );
+                // Create a property set for the artificials properties
+                let artificials    = new PropertySet( "", PropertySetType.Internal );
+                artificials.handle = this._dbgState.varHandles.create( artificials );
+                artificials.scope  = propSet.scope;
                 
-                
-                // Create a property set for the internal properties
-                let internals    = new PropertySet( "", PropertySetType.Internal );
-                internals.handle = this._dbgState.varHandles.create( internals );
-                internals.scope  = propSet.scope;
-                
-                // Convert internals to debugger Variable objets
-                internals.variables = new Array<Variable>( numInternal );
-                for( let i=0; i < numInternal; i++ )
+                // Convert artificials to debugger Variable objets
+                artificials.variables = new Array<Variable>( numArtificial );
+                for( let i=0; i < numArtificial; i++ )
                 {
                     let p = r.properties[i];
-                    internals.variables[i] = new Variable( <string>p.key, String(p.value), 0 );
+                    artificials.variables[i] = new Variable( <string>p.key, String(p.value), 0 );
                 }
                 
-                // Add internal node to the property set
-                propSet.variables.push( new Variable( "__internal", "{...}", internals.handle ) );
+                // Add artificials node to the property set
+                propSet.variables.push( new Variable( "__artificial", "{...}", artificials.handle ) );
                 
-                // Get Property table
-                if( numProps < 1 )
+                // Get object's 'own' properties
+                let maxOwnProps = r.maxPropDescRange;
+                if( maxOwnProps < 1 )
                     return propSet.variables;
 
-                return this.resolvePropertySetVariables(
-                    ArrayX.convert( props, (v) => String(v.key) ),
-                    ArrayX.convert( props, (v) => v.value),
-                    propSet )
-                .then( (p) => propSet.variables );
-                
+                return this._dukProto.requestGetObjPropDescRange( propSet.heapPtr, 0, maxOwnProps )
+                .then( ( r:DukGetObjPropDescRangeResponse ) => {
+                    
+                    // Get rid of undefined ones.
+                    // ( The array part may return undefined indices )
+                    let props:Duk.Property[] = [];
+                    for( let i = 0; i < r.properties.length; i++ )
+                    {
+                        if( r.properties[i].value !== undefined )
+                            props.push( r.properties[i] );
+                    }
+
+                    // TODO: Need to sort keys so that array indices appear last.
+                    // TODO: Need to place internal properties into their own node.
+                    // TODO: Group array indices into sub groups if there's too many?
+
+                    return this.resolvePropertySetVariables(
+                        ArrayX.convert( props, (v) => String(v.key) ),
+                        ArrayX.convert( props, (v) => v.value),
+                        propSet )
+                    .then( (p) => propSet.variables );
+                });
             });
         }
         else if( propSet.type == PropertySetType.Internal )
@@ -1394,18 +1389,22 @@ class DukDebugSession extends DebugSession
             return Promise.resolve( propSet.variables );
         }
         
-        
         return Promise.resolve( [] );
     }
     
     //-----------------------------------------------------------
+    // Takes in a set of keys and dvalues that belong to 
+    // a specified PropertySet and resolves their values
+    // into 'Varaible' objects to be returned to the front end.
+    //----------------------------------------------------------- 
     private resolvePropertySetVariables( keys:string[], values:Duk.DValueUnion[], propSet:PropertySet ) : Promise<PropertySet>
     {
-        let scope:DukScope = propSet.scope;
-        
-        let ctorPromises:Promise<string>[] = [];    // If we find objects values, get their constructors.
-        let objVars     :Variable[]        = [];    // Save object vars separate to set the value
-                                                    //  when the constructor promise returns
+        let scope     :DukScope = propSet.scope;
+        let stackDepth:number   = scope.stackFrame.depth;
+
+        let toStrPromises:Promise<DukEvalResponse>[] = [];  // If we find regular object values, get their toString value
+        let objVars      :Variable[]                 = [];  // Save object vars separate to set the value
+                                                            //  when the toString promises return
         
         if( !propSet.variables )
             propSet.variables = [];
@@ -1425,39 +1424,50 @@ class DukDebugSession extends DebugSession
                 // Check if this object's pointer has already been cached
                 let ptrStr     = ((<Duk.TValObject>value).ptr).toString();
                 let objPropSet = this._dbgState.ptrHandles[ptrStr];
-                 
+                
                 if( objPropSet )
                 {
                     // Object already exists, refer to prop set handle
                     variable.variablesReference = objPropSet.handle;
                     
                     // NOTE: Existing prop sets might register themselves to 
-                    // get the constructor name as well if the existing object 
+                    // get the display name as well if the existing object 
                     // was registered on this very call
                     // (that existing variable is in the same object level as this one), 
-                    // then it's 'ctrorName' field currently points to undefined.
-                    if( objPropSet.ctorName )
+                    // then it's 'displayName' field currently points to undefined.
+                    if( objPropSet.displayName )
                     {
-                        variable.value = objPropSet.ctorName;
+                        variable.value = objPropSet.displayName;
                         continue;
                     }
                 }
                 else
                 {
-                    // New object
+                    // This object's properties have not been resolved yet,
+                    // resolve it for the first time
                     objPropSet          = new PropertySet( key, PropertySetType.Object );
                     objPropSet.heapPtr  = (<Duk.TValObject>value).ptr;
                     objPropSet.scope    = scope;
                     
-                    objPropSet.handle  = this._dbgState.varHandles.create( objPropSet );
+                    objPropSet.handle           = this._dbgState.varHandles.create( objPropSet );
                     variable.variablesReference = objPropSet.handle;
                     
                     // Register with the pointer map
-                    this._dbgState.ptrHandles[ptrStr] = objPropSet;  
+                    this._dbgState.ptrHandles[ptrStr] = objPropSet;
+
+                    // If it's a standard built-in object, then use it's name instead
+                    // Otherwise we will register it to get it's toString() result
+                    if(  (<Duk.TValObject>value).classID != Duk.HObjectClassID.OBJECT )
+                    {
+                        objPropSet.displayName = Duk.HObjectClassNames[(<Duk.TValObject>value).classID];
+                        variable.value         = objPropSet.displayName;
+                        continue;
+                    }
                 }
                 
-                // Mark to request the constructor name
-                ctorPromises.push( this.getObjectConstructorName( objPropSet.heapPtr ) );
+                // Eval Object.toString()
+                let expr = `${key}.toString()`;
+                toStrPromises.push( this._dukProto.requestEval( expr, stackDepth ) );
                 objVars.push( variable );
             }
             else
@@ -1467,192 +1477,60 @@ class DukDebugSession extends DebugSession
             }
         }
         
-        // If we have any objects types, resolve their constructor names
-        if( ctorPromises.length > 0 )
+        // Set the object var's display value to the 'toString' result
+        if( toStrPromises.length > 0 )
         {
-            return Promise.all( ctorPromises )
-            .then( (ctorNames:string[]) => {
+            return Promise.all( toStrPromises )
+            .then( (toStrResults:DukEvalResponse[]) => {
                 
-                //let arrayTypes = [];
-                
-                for( let i=0; i < ctorNames.length; i++ )
+                // For objects whose 'toString' resolved to '[object Object]'
+                // we attempt to get a more suitable name by callng it's
+                // constructor.name property to see if it yields anything useful
+                let ctorRequests:Array<Promise<DukEvalResponse>> = [];
+                let ctorVars    :Array<Variable> = [];
+
+                for( let i=0; i < toStrResults.length; i++ )
                 {
-                    let ctor = ctorNames[i];
-                    //if( ctor == "Array" )
-                    //{
-                    //    arrayTypes.push( objVars[i] );
-                    //    ctor = ctor;
-                    //}
-                    this._dbgState.varHandles.get( objVars[i].variablesReference ).ctorName = ctor;
-                    objVars[i].value = ctor;
+                    let rName;
+                    let r = toStrResults[i];
+                    
+                    rName = r.success ? String(r.result) : "Object";
+
+                    if( rName === "[object Object]" )
+                    {
+                        let exp = `String(${objVars[i].name}.constructor.name)`;
+
+                        ctorRequests.push( this._dukProto.requestEval( exp) );
+                        ctorVars.push( objVars[i] );
+                    }
+
+                    this._dbgState.varHandles.get( objVars[i].variablesReference ).displayName = rName;
+                    objVars[i].value = rName;
+                }
+
+                // If we have any that resolved to '[object Object]', then attempt
+                // to get it's constructor's name
+                if( ctorRequests.length > 0 )
+                {
+                    return Promise.all( ctorRequests )
+                    .then( (ctorNameResp:DukEvalResponse[]) => {
+
+                        // Use the constructor obtained
+                        for( let i = 0; i < ctorNameResp.length; i++ )
+                        {
+                            if( ctorNameResp[i].success )
+                                ctorVars[i].value = <string>ctorNameResp[i].result;
+                        }
+
+                        return Promise.resolve( propSet );
+                    });
                 }
                 
-                // TODO: Support this. It's too costly right now to get the length by
-                // querying all the properties.
-                // Check if we have array types, in order to find their lengths
-                /*
-                if( arrayTypes.length > 0 )
-                {
-                    for( let i=0; i < arrayTypes.length; i++ )
-                        this._dukProto.requestEval( )
-                }
-                else
-                */
-                    return Promise.resolve( propSet ); 
+                return Promise.resolve( propSet ); 
             });
         }
         else
             return Promise.resolve( propSet );
-    }
-    
-    //-----------------------------------------------------------
-    // Find the constructor name for a given heap pointer
-    // Returns "{ Null }" when the pointer is null or
-    // Object upon any failure
-    //-----------------------------------------------------------
-    private getObjectConstructorName( targetPtr:Duk.TValPointer ) : Promise<string>
-    {
-        if( targetPtr.isNull() )
-            return Promise.resolve( "{ Null }" );
-            
-        return this._dukProto.requestInspectHeapObj( targetPtr, 0 )
-        
-        // Find proto type first
-        .then( ( r:DukGetHeapObjInfoResponse ) => {
-            
-            let proto = ArrayX.firstOrNull( r.properties, (v) => v.key == "internal_prototype" );
-            if( !proto )
-                return Promise.reject( null );
-                
-             // Find constructor property
-            return this._dukProto.requestInspectHeapObj( (<Duk.TValObject>proto.value).ptr, 0 )
-            .then( ( r:DukGetHeapObjInfoResponse ) => {
-                
-                let ctorProp = ArrayX.firstOrNull( r.properties, (v) => v.key == "constructor" );
-                if( !ctorProp )
-                    return Promise.reject( null );
-                    
-                // Find name property
-                return this._dukProto.requestInspectHeapObj( (<Duk.TValObject>ctorProp.value).ptr, 0 )
-                .then( ( r:DukGetHeapObjInfoResponse ) => {
-                    
-                    let nameProp = ArrayX.firstOrNull( r.properties, (v) => v.key == "name" );
-                    if( !nameProp )
-                        return Promise.reject( null );
-                    
-                    return String( nameProp.value );
-                });
-            });
-        })
-        .catch( (err) => "Object" );
-    }
-    
-    //-----------------------------------------------------------
-    private getPropertyInfoForKey( name:string, stackDepth:number ) : Promise<any>
-    {
-                    let expression = 
-`
-(function(){
-if( ${name} === undefined ) return JSON.stringify( { n:\"${name}\", t:"undefined", v:"undefined"} );
-if( ${name} === null ) return JSON.stringify( { n:\"${name}\", t:"null", v:"null"} );
-var v;
-var t=typeof ${name};
-if( Object.prototype.toString.call( ${name} ) === \"[object Array]\" ){
-    t = \"array\";
-    v = ${name}.length; }
-else if( ${name} instanceof Object )
-    v = ${name}.constructor.toString().match(/\\w+/g)[1];
-else
-    v = ${name};
-return JSON.stringify( { n:\"${name}\",t:t,v:v } );
-})();`; 
-
-        try {
-            return this._dukProto.requestEval( expression, stackDepth )
-                .then( (r:DukEvalResponse) => {
-                    
-                    if( !r.success || !r.result || typeof r.result !== "string" )
-                    {
-                        // Don't reject the promise, just ignore this properties, some
-                        // of the global properties have some internal name thing that,
-                        // makes the result fail.
-                        return { n: name, t:undefined, v:undefined };
-                        //return Promise.reject( "Eval failed for property key " + name );
-                    }
-                        
-                    let obj = JSON.parse( <string>r.result );
-                        
-                    // Make sure to unquote "undefined" & "null",
-                    // It seems JSON.stirngify won't serialze undefined, so i have to quote it
-                    if( obj.t === "undefined" ) obj.t = undefined;
-                    else if( obj.t === "null" ) obj.t = null;
-                    
-                    if( obj.v === "undefined" ) obj.v = undefined;
-                    else if( obj.v === "null" ) obj.v = null;
-                    
-                    return obj;
-                    
-                });
-        } catch( err ) { return Promise.reject( err ); }
-        
-    }
-    
-    //-----------------------------------------------------------
-    private getPropertyInfoForKeys( keys:string[], stackDepth:number ) : Promise<any>
-    {
-        let promises = new Array<Promise<any>>( keys.length );
-        
-        for( let i=0; i < keys.length; i++ ) 
-            promises[i] = this.getPropertyInfoForKey( keys[i], stackDepth );
-            
-        return Promise.all( promises );
-    }
-    
-    //-----------------------------------------------------------
-    private propertySetToVariables( scope:DukScope, properties:PropertySet,
-                                    propInfos:{ n:string, t:string, v:any }[] ) : Variable[]
-    {
-        assert( Object.prototype.toString.call( propInfos ) === "[object Array]" );
-        
-        let variables:Variable[] = [];
-        variables.length = propInfos.length; 
-        
-        if( propInfos.length < 1 )
-            return [];
-            
-        for( let i = 0; i < propInfos.length; i++ )
-        {
-            let p          = propInfos[i];
-            let value      = "";
-            let propHandle = 0;
-            
-            let isExpandable = ( p.t == "array" || p.t == "object" );
-            
-            if( p.t == "array" )
-                value = `Array[${p.v}]`;     // v = length, for array types
-            else if( p.t == "string" )
-                value = `"${p.v}"`; 
-            else
-                value = p.v;
-            
-            if( isExpandable )
-            {
-                // This is an expandable type, create a sub-PropertySet for this property
-                let subPrefix = properties.prefix == "" ? p.n :
-                                    //properties.type == "object" ?  `${properties.prefix}.${p.n}` :
-                                    `${properties.prefix}[\"${p.n}\"]`;
-                                         
-                let subProps     = new PropertySet( subPrefix, PropertySetType.Object );
-                subProps.handle  = this._dbgState.varHandles.create( subProps );
-                subProps.scope   = scope;
-                
-                propHandle = subProps.handle;
-            }
-            
-            variables[i] = new Variable( p.n, String( value ), propHandle );
-        }
-        
-        return variables;
     }
     
     //-----------------------------------------------------------

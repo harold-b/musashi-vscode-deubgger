@@ -148,6 +148,75 @@
         LIGHTFUNC
     }
 
+    // See DUK_HOBJECT_CLASS_* in duk_hobject.h
+    export enum HObjectClassID
+    {
+        UNUSED               = 0,
+        ARGUMENTS            = 1,
+        ARRAY                = 2,
+        BOOLEAN              = 3,
+        DATE                 = 4,
+        ERROR                = 5,
+        FUNCTION             = 6,
+        JSON                 = 7,
+        MATH                 = 8,
+        NUMBER               = 9,
+        OBJECT               = 10,
+        REGEXP               = 11,
+        STRING               = 12,
+        GLOBAL               = 13,
+        OBJENV               = 14,
+        DECENV               = 15,
+        BUFFER               = 16,
+        POINTER              = 17,
+        THREAD               = 18,
+        ARRAYBUFFER          = 19,
+        DATAVIEW             = 20,
+        INT8ARRAY            = 21,
+        UINT8ARRAY           = 22,
+        UINT8CLAMPEDARRAY    = 23,
+        INT16ARRAY           = 24,
+        UINT16ARRAY          = 25,
+        INT32ARRAY           = 26,
+        UINT32ARRAY          = 27,
+        FLOAT32ARRAY         = 28,
+        FLOAT64ARRAY         = 29,
+
+        _MAX_ITEMS
+    }
+
+    export var HObjectClassNames:Array<string> = [
+        "UNUSED"             ,
+        "Arguments"          ,
+        "Array"              ,
+        "Boolean"            ,
+        "Date"               ,
+        "Error"              ,
+        "Function"           ,
+        "JSON"               ,
+        "Math"               ,
+        "Number"             ,
+        "Object"             ,
+        "RegExp"             ,
+        "String"             ,
+        "global"             ,
+        "ObjEnv"             ,
+        "DecEnv"             ,
+        "Buffer"             ,
+        "Pointer"            ,
+        "Thread"             ,
+        "ArrayBuffer"        ,
+        "DataView"           ,
+        "Int8Array"          ,
+        "Uint8Array"         ,
+        "Uint8ClampedArray"  ,
+        "Int16Array"         ,
+        "Uint16Array"        ,
+        "Int32Array"         ,
+        "Uint32Array"        ,
+        "Float32Array"       ,
+        "Float64Array"
+    ];
 
     export class TValPointer
     {
@@ -323,6 +392,14 @@
         flags :number;
         key   :string | number;
         value :DValueUnion;
+        getter:TValObject;
+        setter:TValObject;
+
+
+        public get isAccessor() : boolean
+        {
+            return (this.flags & PropDescFlag.ATTR_ACCESSOR) != 0; 
+        }
     }
 
 //} // End NS
