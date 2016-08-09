@@ -104,7 +104,7 @@ export interface AttachRequestArguments extends CommonArguments {
 // Debug ( To debug the debgger ) consts
 const enum DebugConsts
 {
-    TRACE = 1
+    TRACE = 0
 }
 
 // Utitity
@@ -359,26 +359,26 @@ class DukDebugSession extends DebugSession
          
         // Disconnect
         this._dukProto.once( DukEvent[DukEvent.disconnected], ( reason:string) => {
-            this.logToClient( `Disconnected: ${reason}` ); 
+            this.logToClient( `Disconnected: ${reason}\n` ); 
             this.sendEvent( new TerminatedEvent() );
         });
         
         // Output
         this._dukProto.on( DukEvent[DukEvent.nfy_print], ( e:DukPrintNotification ) => {
-            this.logToClient( e.message );
+            this.logToClient( e.message, "stdout" );
         });
         
         this._dukProto.on( DukEvent[DukEvent.nfy_alert], ( e:DukAlertNotification ) => {
-            this.logToClient( e.message );
+            this.logToClient( e.message, "console" );
         });
         
         this._dukProto.on( DukEvent[DukEvent.nfy_log], ( e:DukLogNotification ) => {
-            this.logToClient( e.message );
+            this.logToClient( e.message, "stdout" );
         });
         
         // Throw
         this._dukProto.on( DukEvent[DukEvent.nfy_throw], ( e:DukThrowNotification ) => {
-            this.logToClient( `Exception thrown @ ${e.fileName}:${e.lineNumber} : ${e.message}` );
+            this.logToClient( `Exception thrown @${e.fileName}:${e.lineNumber}: ${e.message}\n`, "stderr" );
             this._expectingBreak = "Exception";
         });
     }
@@ -396,12 +396,12 @@ class DukDebugSession extends DebugSession
             
             if( success )
             {
-                this.logToClient( "Attached to duktape debugger." );
+                this.logToClient( "Attached to duktape debugger.\n" );
                 this.finalizeInit( response );
             }
             else
             {
-                this.logToClient( "Attach failed." );
+                this.logToClient( "Attach failed.\n" );
                 this.sendErrorResponse( response, 0, "Attach failed" ); 
             }
         });
@@ -1705,7 +1705,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     private logToClient( msg:string, category?:string ) : void
     {
-        this.sendEvent( new OutputEvent( msg + "\n", category ) );
+        this.sendEvent( new OutputEvent( msg, category ) );
         console.log( msg );
     }
 
