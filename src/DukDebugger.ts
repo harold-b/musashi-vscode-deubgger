@@ -45,9 +45,8 @@ import {
 import * as Duk from "./DukConsts";
 
 
-/**
- * Arguments shared between Launch and Attach requests.
- */
+
+ // Arguments shared between Launch and Attach requests.
 export interface CommonArguments {
     /** comma separated list of trace selectors. Supported:
      * 'all': all
@@ -67,9 +66,8 @@ export interface CommonArguments {
     isMusashi?: boolean;
 }
 
-/**
- * This interface should always match the schema found in the node-debug extension manifest.
- */
+
+// This interface should always match the schema found in the node-debug extension manifest.
 export interface LaunchRequestArguments extends CommonArguments {
     /** An absolute path to the program to debug. */
     program: string;
@@ -87,9 +85,8 @@ export interface LaunchRequestArguments extends CommonArguments {
     externalConsole?: boolean;
 }
 
-/**
- * This interface should always match the schema found in the node-debug extension manifest.
- */
+
+// This interface should always match the schema found in the node-debug extension manifest.
 export interface AttachRequestArguments extends CommonArguments {
     /** The debug port to attach to. */
     port: number;
@@ -102,6 +99,12 @@ export interface AttachRequestArguments extends CommonArguments {
     remoteRoot?: string;
     /** VS Code's root directory. */
     localRoot?: string;
+}
+
+// Debug ( To debug the debgger ) consts
+const enum DebugConsts
+{
+    TRACE = 1
 }
 
 // Utitity
@@ -161,13 +164,11 @@ class SourceFile
     }
 }
 
-type PropertyInfo = { n:string, t:string, v:any };
- 
 enum PropertySetType
 {
     Scope  = 0,
     Object,
-    Internal
+    Artificials
 }
 
 class PropertySet
@@ -178,12 +179,10 @@ class PropertySet
     public displayName :string;
 
     public heapPtr   :Duk.TValPointer;
-    public keys      :string[];
     public variables :Variable[];
     
-    public constructor( prefix:string, type:PropertySetType )
+    public constructor( type:PropertySetType )
     {
-        //this.prefix = prefix;
         this.type   = type;
     }
 }
@@ -234,7 +233,6 @@ class PtrPropDict {  [key:string]:PropertySet };
 class DbgClientState
 {
     public paused        :boolean;
-    public expectingBreak:string;
     
     public ptrHandles   :PtrPropDict;            // Access to property sets via pointers
     public varHandles   :Handles<PropertySet>;   // Handles to property sets
@@ -246,7 +244,6 @@ class DbgClientState
     public reset() : void
     {
         this.paused         = false;
-        this.expectingBreak = undefined;
         this.ptrHandles     = new PtrPropDict();
         this.varHandles     = new Handles<PropertySet>();
         this.stackFrames    = new Handles<DukStackFrame>();
@@ -285,12 +282,14 @@ class DukDebugSession extends DebugSession
     private _awaitingInitialStatus:boolean;
     private _initialStatus  :DukStatusNotification;
     
+    private _expectingBreak    :string = "debugger";
+    private _expectingContinue :boolean = false;
   
     //-----------------------------------------------------------
     public constructor()
     {
         super();
-        this.logToClient( "DukDebugSession()" );
+        this.dbgLog( "DukDebugSession()" );
 
         // this debugger uses zero-based lines and columns
         this.setDebuggerLinesStartAt1   ( true );
@@ -304,21 +303,18 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     private initDukDbgProtocol() : void
     {
-        this._dukProto = new DukDbgProtocol( ( msg ) => this.logToClient(msg) ); 
+        this._dukProto = new DukDbgProtocol( ( msg ) => this.dbgLog(msg) ); 
         
         // Status
         this._dukProto.on( DukEvent[DukEvent.nfy_status], ( status:DukStatusNotification ) => {
             
             if( status.state == DukStatusState.Paused )
-                this.logToClient( "Status Notification: PAUSE" );
+                this.dbgLog( "Status Notification: PAUSE" );
 
-            //this.logToClient( "Status Notification: " + 
+            //this.dbgLog( "Status Notification: " + 
             //    (status.state == DukStatusState.Paused ? "pause" : "running") );
             
-            let stopReason = this._dbgState.expectingBreak == undefined ?
-                 "debugger" : this._dbgState.expectingBreak;
-           
-            this._dbgState.expectingBreak = undefined;
+            // TODO: Set stopReason to 'breakpoint' if there's a breakpoint in the stop location
             
             if( !this._initialStatus )
             {
@@ -335,20 +331,29 @@ class DukDebugSession extends DebugSession
             // Pause/Unpause
             if( status.state == DukStatusState.Paused )
             {
-                //this.logToClient( "Pause reported" );
-                this.logToClient( "PAUSED: " + stopReason );
+                let sourceFile:SourceFile = this._sources[status.filename];
+                if( sourceFile )
+                {
+                    // TODO: Check for source map
+                    let bp = ArrayX.firstOrNull( sourceFile.breakpoints, b => b.line == status.linenumber );
+                    if( bp )
+                        this._expectingBreak = "breakpoint";
+                }
+
                 this._dbgState.reset();
                 this._dbgState.paused = true;
-                this.sendEvent( new StoppedEvent( stopReason, DukDebugSession.THREAD_ID ) );
+                this.sendEvent( new StoppedEvent( this._expectingBreak, DukDebugSession.THREAD_ID ) );
+                this._expectingBreak = "debugger";
             }
             else
             {
                 // Resume
-                this.logToClient( "RESUMED" );
                 //this._dbgState.reset();
+
+                if( this._dbgState.paused )
+                    this.sendEvent( new ContinuedEvent( DukDebugSession.THREAD_ID, true) );
+
                 this._dbgState.paused = false;
-                this.sendEvent( new ContinuedEvent( DukDebugSession.THREAD_ID, true) );
-                // TODO: Resume?
             }
         });
          
@@ -374,6 +379,7 @@ class DukDebugSession extends DebugSession
         // Throw
         this._dukProto.on( DukEvent[DukEvent.nfy_throw], ( e:DukThrowNotification ) => {
             this.logToClient( `Exception thrown @ ${e.fileName}:${e.lineNumber} : ${e.message}` );
+            this._expectingBreak = "Exception";
         });
     }
 
@@ -408,7 +414,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     private finalizeInit( response:DebugProtocol.Response ) : void
     {
-        this.logToClient( "Finalized Initialization." );
+        this.dbgLog( "Finalized Initialization." );
         
         this._sources = {};
         
@@ -444,7 +450,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected initializeRequest( response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments ): void
     {
-        this.logToClient( "[FE] initializeRequest." );
+        this.dbgLog( "[FE] initializeRequest." );
         
         // This debug adapter implements the configurationDoneRequest.
         response.body.supportsConfigurationDoneRequest = true;
@@ -458,12 +464,13 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected launchRequest( response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments ) : void
     {
-        this.logToClient( "[FE] ilaunchRequest" );
+        this.dbgLog( "[FE] launchRequest" );
+        throw new Error( "Launching is not currently supported. Use Attach." );
         return;
         
-        this.logToClient( "Program : " + args.program );
-        this.logToClient( "CWD     : " + args.cwd );
-        this.logToClient( "Stop On Entry  : " + args.stopOnEntry );
+        this.dbgLog( "Program : " + args.program );
+        this.dbgLog( "CWD     : " + args.cwd );
+        this.dbgLog( "Stop On Entry  : " + args.stopOnEntry );
         
         
         this._launchType    = LaunchType.Launch;
@@ -492,7 +499,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected attachRequest( response: DebugProtocol.AttachResponse, args: AttachRequestArguments ) : void
     {
-        this.logToClient( "[FE] attachRequest" );
+        this.dbgLog( "[FE] attachRequest" );
         
         this._args          = args;
         this._launchType    = LaunchType.Attach;
@@ -506,7 +513,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected disconnectRequest( response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments ) : void
     {
-        this.logToClient( "disconnectRequest" );
+        this.dbgLog( "[FE] disconnectRequest" );
         
         const timeoutMS = 2000;
         
@@ -519,7 +526,7 @@ class DukDebugSession extends DebugSession
                 
             finished = true;
             
-            this.logToClient( "Disconnecing Socket." );
+            this.dbgLog( "Disconnecing Socket." );
             this._dukProto.disconnect();
             this.sendResponse( response );
         };
@@ -530,7 +537,7 @@ class DukDebugSession extends DebugSession
             if( finished )
                 return;
                 
-            this.logToClient( "Detach request took too long. Forcefully disconnecting." );
+            this.dbgLog( "Detach request took too long. Forcefully disconnecting." );
             doDisconnect();
             
         }, timeoutMS );
@@ -575,12 +582,12 @@ class DukDebugSession extends DebugSession
         
         if( sources.length > 0 )
         {
-            this.logToClient( "Clearing breakpoints on target." );
+            this.dbgLog( "Clearing breakpoints on target." );
             clearSource(0);
         }
         else
         {
-            this.logToClient( "No breakpoints. Detaching immediately." );
+            this.dbgLog( "No breakpoints. Detaching immediately." );
             doDetach();
         }
     }
@@ -588,14 +595,14 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected setBreakPointsRequest( response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments ) : void
     {
-        this.logToClient( "setBreakPointsRequest" );
+        this.dbgLog( "[FE] setBreakPointsRequest" );
         
         // Try to find the source file
         var src:SourceFile = this.mapSourceFile( this.getSourceNameByPath( args.source.path ) );
         
         if( !src )
         {
-            this.logToClient( "Unknown source file: " + args.source.path );
+            this.dbgLog( "Unknown source file: " + args.source.path );
             this.sendErrorResponse( response, 0, "SetBreakPoint failed" ); 
             return;
         }
@@ -633,7 +640,7 @@ class DukDebugSession extends DebugSession
                 let r = <DukAddBreakResponse>resp;
                 
                 src.breakpoints.push( new DukBreakPoint( r.index, bp.line ) );
-                //this.logToClient( "BRK: " + r.index + " ( " + bp.line + ")");
+                //this.dbgLog( "BRK: " + r.index + " ( " + bp.line + ")");
                 
                 outBreaks.push( new Breakpoint( true, bp.line ) );
                 
@@ -656,28 +663,28 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected setFunctionBreakPointsRequest( response: DebugProtocol.SetFunctionBreakpointsResponse, args: DebugProtocol.SetFunctionBreakpointsArguments ): void
     {
-        this.logToClient( "setFunctionBreakPointsRequest" );
+        this.dbgLog( "[FE] setFunctionBreakPointsRequest" );
         this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     protected setExceptionBreakPointsRequest( response: DebugProtocol.SetExceptionBreakpointsResponse, args: DebugProtocol.SetExceptionBreakpointsArguments ): void
     {
-        this.logToClient( "setExceptionBreakPointsRequest" );
+        this.dbgLog( "[FE] setExceptionBreakPointsRequest" );
         this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     protected configurationDoneRequest( response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments ): void
     {
-        this.logToClient( "configurationDoneRequest" );
+        this.dbgLog( "[FE] configurationDoneRequest" );
         this.sendResponse( response );
     }
     
     //-----------------------------------------------------------
     protected continueRequest( response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments ): void
     {
-        this.logToClient( "continueRequest" );
+        this.dbgLog( "[FE] continueRequest" );
         
         if( this._dbgState.paused )
         {
@@ -693,7 +700,7 @@ class DukDebugSession extends DebugSession
         }
         else
         {
-            this.logToClient( "Can't continue when not paused" );
+            this.dbgLog( "Can't continue when not paused" );
             this.requestFailedResponse( response, "Not paused." );
             return;
         }
@@ -703,15 +710,16 @@ class DukDebugSession extends DebugSession
     // StepOver
     protected nextRequest( response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments ): void
     {
-        this.logToClient( "[FE] nextRequest" );
+        this.dbgLog( "[FE] nextRequest" );
         
         if( !this._dbgState.paused )
         {
-            this.logToClient( "Can't step over when not paused" );
+            this.dbgLog( "Can't step over when not paused" );
             this.requestFailedResponse( response, "Not paused." );
             return;
         }
         
+        this._expectingBreak = "step";
         this._dukProto.requestStepOver().then( ( val ) => {
             // A status notification should follow shortly
             //this.sendResponse( response );
@@ -727,15 +735,16 @@ class DukDebugSession extends DebugSession
     // StepInto
     protected stepInRequest (response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments ): void
     {
-        this.logToClient( "[FE] stepInRequest" );
+        this.dbgLog( "[FE] stepInRequest" );
         
         if( !this._dbgState.paused )
         {
-            this.logToClient( "Can't step into when not paused" );
+            this.dbgLog( "Can't step into when not paused" );
             this.requestFailedResponse( response, "Not paused." );
             return;
         }
         
+        this._expectingBreak = "stepin";
         this._dukProto.requestStepInto().then( ( val ) => {
             // A status notification should follow shortly
             //this.sendResponse( response );
@@ -751,15 +760,16 @@ class DukDebugSession extends DebugSession
     // StepOut
     protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void
     {
-        this.logToClient( "[FE] stepOutRequest" );
+        this.dbgLog( "[FE] stepOutRequest" );
         
         if( !this._dbgState.paused )
         {
-            this.logToClient( "Can't step out when not paused" );
+            this.dbgLog( "Can't step out when not paused" );
             this.requestFailedResponse( response, "Not paused." );
             return;
         }
         
+        this._expectingBreak = "stepout";
         this._dukProto.requestStepOut().then( ( val ) => {
             // A status notification should follow shortly
             //this.sendResponse( response );
@@ -778,12 +788,11 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected pauseRequest( response: DebugProtocol.PauseResponse, args: DebugProtocol.PauseArguments ): void
     {
-        this.logToClient( "[FE] pauseRequest" );
+        this.dbgLog( "[FE] pauseRequest" );
         
         if( !this._dbgState.paused )
         {
-            this._dbgState.expectingBreak = "pause";
-            
+            this._expectingBreak = "pause";
             this._dukProto.requestPause().then( ( val ) => {
                 
                 // A status notification should follow shortly
@@ -797,7 +806,7 @@ class DukDebugSession extends DebugSession
         }
         else
         {
-            this.logToClient( "Can't paused when already paused." );
+            this.dbgLog( "Can't paused when already paused." );
             this.requestFailedResponse( response, "Already paused." );
         }
     }
@@ -805,7 +814,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected sourceRequest( response: DebugProtocol.SourceResponse, args: DebugProtocol.SourceArguments ): void
     {
-        this.logToClient( "[FE] sourceRequest" );
+        this.dbgLog( "[FE] sourceRequest" );
         
         let ref = args.sourceReference;
         
@@ -817,7 +826,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected threadsRequest( response: DebugProtocol.ThreadsResponse ): void
     {
-        this.logToClient( "[FE] threadsRequest" );
+        this.dbgLog( "[FE] threadsRequest" );
         
         response.body = {
             threads:  [ new Thread( DukDebugSession.THREAD_ID, "Main Thread") ]
@@ -829,7 +838,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected stackTraceRequest( response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments ): void
     {
-        this.logToClient( "[FE] stackTraceRequest" );
+        this.dbgLog( "[FE] stackTraceRequest" );
         
         // Make sure we're paused
         if( !this._dbgState.paused )
@@ -924,7 +933,7 @@ class DukDebugSession extends DebugSession
             doApplyConstructors( 0 );
         
         }).catch( ( err ) => {
-            this.logToClient( "Stack trace failed: " + err );
+            this.dbgLog( "Stack trace failed: " + err );
             
             response.body = { stackFrames: [] };
             this.sendResponse( response );
@@ -937,7 +946,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected scopesRequest( response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments ):void
     {
-        this.logToClient( "[FE] scopesRequest" );
+        this.dbgLog( "[FE] scopesRequest" );
         assert( this._dbgState.paused );
 
         /// +TEST
@@ -1003,7 +1012,7 @@ class DukDebugSession extends DebugSession
         })
         .catch( err => {
             
-            this.logToClient( "scopesRequest failed: " + err );
+            this.dbgLog( "scopesRequest failed: " + err );
             response.body = { scopes: [] };
             this.sendResponse( response );
         });
@@ -1012,7 +1021,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected variablesRequest( response:DebugProtocol.VariablesResponse, args:DebugProtocol.VariablesArguments ):void
     {
-        this.logToClient( "[FE] variablesRequest" );
+        this.dbgLog( "[FE] variablesRequest" );
         assert( args.variablesReference != 0 );
         
         var properties = this._dbgState.varHandles.get( args.variablesReference );
@@ -1030,24 +1039,51 @@ class DukDebugSession extends DebugSession
         
         var scope      = properties.scope;
         var stackFrame = scope.stackFrame;
+
+        var returnVars = ( vars:Variable[] ) => {
+
+            // Sort vars and return them.
+            // We don't sort artificial properties
+            if( properties.type != PropertySetType.Artificials )
+            {
+                vars.sort( ( a, b ) => {
+
+                    let aNum  :number  = Number(a.name);
+                    let bNum  :number  = Number(b.name);
+                    let aIsNum:boolean = !isNaN(aNum);
+                    let bIsNum:boolean = !isNaN(bNum);
+
+                    if( !aIsNum && bIsNum )
+                        return -1;
+                    else if( aIsNum && !bIsNum )
+                        return 1;
+                    else if( aIsNum && bIsNum )
+                    {
+                        return aNum < bNum ? -1 :
+                               aNum > bNum ? 1 : 0;
+                    }
+
+                    return a.name < b.name ? -1 :
+                        a.name > b.name ? 1 : 0;
+                });
+            }
+
+            response.body = { variables: vars };
+            this.sendResponse( response );
+        };
         
         // Determine the PropertySet's reference type
         if( properties.type == PropertySetType.Scope )
         {
             // Scope-level variables are resolved at the time of the Scope request
             // just return the variables array
-            response.body = { variables: scope.properties.variables };
-            this.sendResponse( response );
-            
-            return;
+            returnVars( scope.properties.variables );
         }
         else if( properties.type >= PropertySetType.Object )
         {
             // Resolve object sub-properties
             this.expandPropertySubset( properties ).then( objVars => {
-                
-                response.body = { variables: objVars };
-                this.sendResponse( response ) ;
+                returnVars( objVars );
             });
         }
     }
@@ -1055,7 +1091,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     protected evaluateRequest( response:DebugProtocol.EvaluateResponse, args:DebugProtocol.EvaluateArguments ):void
     {
-        this.logToClient( "[FE] evaluateRequest" );
+        this.dbgLog( "[FE] evaluateRequest" );
         
         let x = args.expression;
         if( x.indexOf( "cmd:") == 0 )
@@ -1075,13 +1111,13 @@ class DukDebugSession extends DebugSession
                         .then( resp => {
                             
                             let r = <DukListBreakResponse>resp;
-                            this.logToClient( "Breakpoints: " + r.breakpoints.length );
+                            this.dbgLog( "Breakpoints: " + r.breakpoints.length );
                             for( let i = 0; i < r.breakpoints.length; i++ )
                             {
                                 let bp   = r.breakpoints[i];
                                 let line = ( "[" + i + "] " + bp.fileName + ": " + bp.line );
                                 
-                                this.logToClient( line );  
+                                this.dbgLog( line );  
                                 result += ( line + "\n" );
                             }
                             
@@ -1168,7 +1204,7 @@ class DukDebugSession extends DebugSession
             this.sendResponse( response );
         })
         .catch( err => {
-            this.logToClient( "scopesRequest (Locals) failed: " + err );
+            this.dbgLog( "scopesRequest (Locals) failed: " + err );
             response.body = { scopes: [] };
         });
     }
@@ -1221,7 +1257,7 @@ class DukDebugSession extends DebugSession
             }
             catch( err )
             {
-                this.logToClient( "an error " + err);
+                this.dbgLog( "an error " + err);
             }
         };
         
@@ -1236,7 +1272,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     private removeAllTargetBreakpoints() : Promise<any>
     {
-        this.logToClient( "removeAllTargetBreakpoints" );
+        this.dbgLog( "removeAllTargetBreakpoints" );
         
         var numBreakpoints:number = 0;
         
@@ -1273,7 +1309,7 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     private expandScopeProperties( keys:string[], scope:DukScope ) : Promise<PropertySet>
     {
-        var propSet = new PropertySet( "", PropertySetType.Scope );
+        var propSet = new PropertySet( PropertySetType.Scope );
         propSet.handle    = this._dbgState.varHandles.create( propSet );
         propSet.scope     = scope;
         propSet.variables = [];
@@ -1340,10 +1376,10 @@ class DukDebugSession extends DebugSession
                 let props         = r.properties;
                 
                 // Create a property set for the artificials properties
-                let artificials    = new PropertySet( "", PropertySetType.Internal );
-                artificials.handle = this._dbgState.varHandles.create( artificials );
-                artificials.scope  = propSet.scope;
-                
+                let artificials         = new PropertySet( PropertySetType.Artificials );
+                artificials.handle      = this._dbgState.varHandles.create( artificials );
+                artificials.scope       = propSet.scope;
+
                 // Convert artificials to debugger Variable objets
                 artificials.variables = new Array<Variable>( numArtificial );
                 for( let i=0; i < numArtificial; i++ )
@@ -1372,8 +1408,7 @@ class DukDebugSession extends DebugSession
                             props.push( r.properties[i] );
                     }
 
-                    // TODO: Need to sort keys so that array indices appear last.
-                    // TODO: Need to place internal properties into their own node.
+                    // TODO: Need to place internal(I don't mean artificials) properties into their own node.
                     // TODO: Group array indices into sub groups if there's too many?
 
                     return this.resolvePropertySetVariables(
@@ -1384,7 +1419,7 @@ class DukDebugSession extends DebugSession
                 });
             });
         }
-        else if( propSet.type == PropertySetType.Internal )
+        else if( propSet.type == PropertySetType.Artificials )
         {
             return Promise.resolve( propSet.variables );
         }
@@ -1445,7 +1480,7 @@ class DukDebugSession extends DebugSession
                 {
                     // This object's properties have not been resolved yet,
                     // resolve it for the first time
-                    objPropSet          = new PropertySet( key, PropertySetType.Object );
+                    objPropSet          = new PropertySet( PropertySetType.Object );
                     objPropSet.heapPtr  = (<Duk.TValObject>value).ptr;
                     objPropSet.scope    = scope;
                     
@@ -1491,17 +1526,24 @@ class DukDebugSession extends DebugSession
 
                 for( let i=0; i < toStrResults.length; i++ )
                 {
-                    let rName;
+                    let rName:string;
                     let r = toStrResults[i];
                     
                     rName = r.success ? String(r.result) : "Object";
 
-                    if( rName === "[object Object]" )
+                    if( rName.indexOf("[object") >= 0 )
                     {
-                        let exp = `String(${objVars[i].name}.constructor.name)`;
+                        if( rName === "[object Object]" )
+                        {
+                            let exp = `String(${objVars[i].name}.constructor.name)`;
 
-                        ctorRequests.push( this._dukProto.requestEval( exp) );
-                        ctorVars.push( objVars[i] );
+                            ctorRequests.push( this._dukProto.requestEval( exp) );
+                            ctorVars.push( objVars[i] );
+                        }
+                        else
+                        {
+                            rName = rName.substring( "[object ".length, rName.length-1 );
+                        }
                     }
 
                     this._dbgState.varHandles.get( objVars[i].variablesReference ).displayName = rName;
@@ -1614,7 +1656,8 @@ class DukDebugSession extends DebugSession
         try { this.checkForSourceMap( src );
         } catch( err ){}
         
-        sources[src.id] = src;
+        sources[src.id]   = src;
+        sources[src.name] = src;
         return src;
     }
     
@@ -1644,28 +1687,37 @@ class DukDebugSession extends DebugSession
         msg = msg ? msg.toString() : "";
         
         msg = "Request failed: " + msg; 
-        this.logToClient( "ERROR: " + msg );
+        this.dbgLog( "ERROR: " + msg );
         this.sendErrorResponse( response, ErrorCode.RequestFailed, msg );
-    }
-    
-    //-----------------------------------------------------------
-    private logToClient( msg:string ) : void
-    {
-        this.sendEvent( new OutputEvent( msg + "\n" ) );
-        
-        console.log( msg );
     }
     
     //-----------------------------------------------------------
     private normPath( fpath:string ) : string
     {
-        if( !fpath )fpath = "";
+        if( !fpath )
+            fpath = "";
 
         fpath = Path.normalize( fpath );
         fpath = fpath.replace(/\\/g, '/');
         return fpath;
     }
+    
+    //-----------------------------------------------------------
+    private logToClient( msg:string, category?:string ) : void
+    {
+        this.sendEvent( new OutputEvent( msg + "\n", category ) );
+        console.log( msg );
+    }
 
+    //-----------------------------------------------------------
+    private dbgLog( msg:string ) : void
+    {
+        if( DebugConsts.TRACE )
+        {
+            this.sendEvent( new OutputEvent( msg + "\n" ) );
+            console.log( msg );
+        }
+    }
 }
 
 DebugSession.run( DukDebugSession );

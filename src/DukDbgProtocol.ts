@@ -122,6 +122,7 @@ export class DukLogNotification extends DukNotificationMessage
 
 export class DukThrowNotification extends DukNotificationMessage
 {
+    // NFY <int: 5> <int: fatal> <str: msg> <str: filename> <int: linenumber> EOM
     public fatal      :DukThrowFatal;
     public message    :string;
     public fileName   :string;
@@ -131,8 +132,8 @@ export class DukThrowNotification extends DukNotificationMessage
     {
         super( Duk.NotifyType.THROW );
 
-        if( msg.length != 6 )
-            throw new Error( "Invalud notification message." );
+        if( msg.length != 7 )
+            throw new Error( "Invalid notification message." );
 
         this.fatal      = <DukThrowFatal><number>msg[2].value;
         this.message    = <string>msg[3].value;
@@ -1001,7 +1002,7 @@ export class DukDbgProtocol extends EE.EventEmitter
 
         return this.sendRequest( Duk.CmdType.GETOBJPROPDESCRANGE, this._outBuf.finish() );
     }
-    
+
     //-----------------------------------------------------------
     // This request is Musashi-specific.
     //-----------------------------------------------------------
