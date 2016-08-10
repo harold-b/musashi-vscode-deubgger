@@ -51,6 +51,7 @@ function compileTSProject()
 
 
 /// Tasks
+
 gulp.task( "build", function( callback ) {
     //runSequence( "clean", "compile", callback );
     runSequence( "clean", "tsc", callback );
@@ -58,6 +59,10 @@ gulp.task( "build", function( callback ) {
 
 gulp.task( "clean", function() {
 	return del( ['out/**'] );
+});
+
+gulp.task( "watch", ["build"], function() {
+    gulp.watch( "./src/**/*.ts", ["build"] );
 });
 
 gulp.task( "lint", function() {

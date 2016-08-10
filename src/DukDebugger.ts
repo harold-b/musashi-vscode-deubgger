@@ -14,7 +14,7 @@ import * as Path from 'path';
 import * as FS   from 'fs';
 import * as util from 'util';
 import * as assert from 'assert';
-import { ISourceMaps, SourceMaps, Bias } from './sourceMaps';
+import { ISourceMaps, SourceMaps, SourceMap, Bias } from './sourceMaps';
 import * as PathUtils from './pathUtilities';
 
 import {
@@ -137,16 +137,94 @@ enum LaunchType
 
 class DukBreakPoint
 {
-    public dukIdx:number;   // duktape breakpoint index
-    public line  :number;   // Front-end line number
-    
-    constructor( index:number, line:number )
+    public filePath:string;   // Absolute path of the file with the breakpoint
+    public dukIdx  :number;   // duktape breakpoint index
+    public line    :number;   // Front-end line number
+
+    constructor( filePath:string, line:number )
     {
-        this.dukIdx = index;
-        this.line   = line;
+        this.filePath  = filePath;
+        this.line      = line;
     }
 }
 
+class BreakPointMap
+{
+    // Duktape keeps a contiguous breakpoint buffer.
+    // Their IDs are based on their position in the buffer,
+    // therefore when one breakpoint is removed in the buffer and 
+    // leaves a hole, all breakpoints following that index will have
+    // their id changed implicitly. So we replicated the buffer on the client.
+    public _breakpoints:DukBreakPoint[] = [];
+
+    find( filePath:string, line:number ):DukBreakPoint
+    {
+        return ArrayX.firstOrNull( this._breakpoints, b =>
+            b.filePath === filePath && b.line === line
+        );
+    }
+
+    getBreakpointsForFile( filePath:string ):Array<DukBreakPoint>
+    {
+        filePath = Path.normalize( filePath );
+
+        let bps                    = this._breakpoints;
+        let len                    = bps.length;
+        let result:DukBreakPoint[] = [];
+
+        for( let i = 0; i < len; i++ )
+        {
+            if( bps[i].filePath === filePath )
+                result.push( bps[i] );
+        }
+
+        return result;
+    }
+
+    removeBreakpoints( remList:DukBreakPoint[] ):void
+    {
+        let bps = this._breakpoints;
+
+        remList.forEach( b => {
+            for( let i = 0; i < bps.length; i++ ) 
+            {
+                if( bps[i].dukIdx === b.dukIdx ) {
+                    bps[i] = null;
+                    break;
+                }
+            }
+        });
+        for( let i = bps.length-1; i >= 0; i-- )
+        {
+            if( bps[i] == null )
+                bps.splice(i);
+        }
+
+        // Reset IDs
+        for( let i = 0; i < bps.length; i++ )
+            bps[i].dukIdx = i;
+    }
+
+    addBreakpoints( remList:DukBreakPoint[] ):void
+    {
+        let bps = this._breakpoints;
+        remList.forEach( b => bps.push(b) );
+
+        // Reset IDs
+        for( let i = 0; i < bps.length; i++ )
+            bps[i].dukIdx = i;
+    }
+}
+
+class SourceFilePosition
+{
+    public path     :string;
+    public fileName :string;
+    public line     :number;
+}
+
+// Represents a source file on disk.
+// It always points to the generated source file, even if sourceMaps are enabled.
 class SourceFile
 {
     public id         :number;
@@ -154,13 +232,58 @@ class SourceFile
     public path       :string;
     
     public srcMapPath :string;
-    //public srcMap     :SourceMap;
-    
-    public breakpoints:DukBreakPoint[];
-    
+    public srcMap     :SourceMap;
+
     constructor()
     {
-        this.breakpoints = new Array<DukBreakPoint>();
+    }
+
+    // Generated to original source ( ie: JS -> TS )
+    public generated2Source( line:number ):SourceFilePosition
+    {
+        if( this.srcMap )
+        {
+            let pos = this.srcMap.originalPositionFor( line, 0, Bias.LEAST_UPPER_BOUND );
+            
+            if( pos.line != null )
+            {
+                return {
+                    path     : pos.source,
+                    fileName : Path.basename( pos.source ),
+                    line     : pos.line
+                };
+            }
+        }
+
+        return {
+            path     : this.path,
+            fileName : this.name,
+            line     : line
+        };
+    }
+
+    // Original source to generated ( ie: TS -> JS )
+    public source2Generated( absSourcePath:string, line:number ):SourceFilePosition
+    {
+        if( this.srcMap )
+        {
+            let pos = this.srcMap.generatedPositionFor( absSourcePath, line, 0, Bias.LEAST_UPPER_BOUND );
+            
+            if( pos.line != null )
+            {
+                return {
+                    path     : this.path,
+                    fileName : this.name,
+                    line     : pos.line
+                };
+            }
+        }
+
+        return {
+            path     : this.path,
+            fileName : this.name,
+            line     : line
+        };
     }
 }
 
@@ -206,7 +329,10 @@ class DukStackFrame
 {
     public handle     :number;
     public source     :SourceFile;
-    public fileName   :string;
+
+    public fileName   :string;      // We keep a path here, in addition to the SourceFile in 
+    public filePath   :string;      // case it's a different file than the SourceFile because of SourceMaps
+                                    
     public funcName   :string;
     public lineNumber :number;
     public pc         :number;
@@ -214,12 +340,13 @@ class DukStackFrame
     public klass      :string;
     public scopes     :DukScope[];
 
-    public constructor( source:SourceFile, fileName:string, funcName:string,
-                        lineNumber:number, pc:number, depth:number,
-                        scopes:DukScope[] )
+    public constructor( source:SourceFile, fileName:string, filePath:string,
+                        funcName:string, lineNumber:number, pc:number,
+                        depth:number, scopes:DukScope[] )
     {
         this.source     = source     ;
         this.fileName   = fileName   ;
+        this.filePath   = filePath   ;
         this.funcName   = funcName   ;
         this.lineNumber = lineNumber ;
         this.pc         = pc         ;
@@ -238,8 +365,6 @@ class DbgClientState
     public varHandles   :Handles<PropertySet>;   // Handles to property sets
     public stackFrames  :Handles<DukStackFrame>;
     public scopes       :Handles<DukScope>;
-    public nextSrcID    :number;
-    
     
     public reset() : void
     {
@@ -248,7 +373,6 @@ class DbgClientState
         this.varHandles     = new Handles<PropertySet>();
         this.stackFrames    = new Handles<DukStackFrame>();
         this.scopes         = new Handles<DukScope>();
-        this.nextSrcID      = 1;
     }
 }
 
@@ -266,8 +390,18 @@ class DukDebugSession extends DebugSession
     private _attachArgs     :AttachRequestArguments;
     
     private _args           :CommonArguments;
-    private _sources        :{};
-    private _sourceMaps     :SourceMaps;
+
+    private _sources        :{};                // Key/Value pairs of fileName/SourceFile
+    private _sourceMaps     :SourceMaps;        // SourceMap utility
+    private _sourceToGen    :{};                // Key/Value pairs of source filePath/SourceFile
+                                                // for when SourceMaps are enabled.
+                                                // The SourceFile they point to is the SourceFile to
+                                                // the generated file. Original sources do not get
+                                                // a SourceFile assigned to them.
+    private _nextSourceID   :number         = 1;
+
+    private _breakpoints:BreakPointMap = new BreakPointMap();    // Holds all active breakpoints
+
     private _launchType     :LaunchType;
     private _targetProgram  :string;
     private _sourceRoot     :string;
@@ -314,8 +448,6 @@ class DukDebugSession extends DebugSession
             //this.dbgLog( "Status Notification: " + 
             //    (status.state == DukStatusState.Paused ? "pause" : "running") );
             
-            // TODO: Set stopReason to 'breakpoint' if there's a breakpoint in the stop location
-            
             if( !this._initialStatus )
             {
                 if( this._awaitingInitialStatus )
@@ -331,11 +463,15 @@ class DukDebugSession extends DebugSession
             // Pause/Unpause
             if( status.state == DukStatusState.Paused )
             {
-                let sourceFile:SourceFile = this._sources[status.filename];
+                // Set stopReason to 'breakpoint' if there's a breakpoint in the stop location
+                let sourceFile:SourceFile = this.mapSourceFile( status.filename );
                 if( sourceFile )
                 {
-                    // TODO: Check for source map
-                    let bp = ArrayX.firstOrNull( sourceFile.breakpoints, b => b.line == status.linenumber );
+                    let line = this.convertDebuggerLineToClient( status.linenumber );
+                    let pos  = sourceFile.generated2Source( line );
+
+                    let bp   = this._breakpoints.find( pos.fileName, pos.line );
+
                     if( bp )
                         this._expectingBreak = "breakpoint";
                 }
@@ -416,8 +552,9 @@ class DukDebugSession extends DebugSession
     {
         this.dbgLog( "Finalized Initialization." );
         
-        this._sources = {};
-        
+        this._sources     = {};
+        this._sourceToGen = {};
+
         if( this._args.sourceMaps )
             this._sourceMaps = new SourceMaps( this._outDir );
         
@@ -427,7 +564,7 @@ class DukDebugSession extends DebugSession
         // Make sure that any breakpoints that were left set in 
         // case of a broken connection are cleared
         this.removeAllTargetBreakpoints().catch()
-        .then( () =>{
+        .then( () => {
                 
             this._awaitingInitialStatus = true;
             
@@ -446,7 +583,7 @@ class DukDebugSession extends DebugSession
     /// DebugSession
     //-----------------------------------------------------------
     // The 'initialize' request is the first request called by the frontend
-    // to interrogate the features the debug adapter provides.
+    // to interrogate the debug adapter about the features it provides.
     //-----------------------------------------------------------
     protected initializeRequest( response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments ): void
     {
@@ -479,21 +616,6 @@ class DukDebugSession extends DebugSession
         this._stopOnEntry   = args.stopOnEntry;
         
         /// TODO: Support launch
-        
-        //this.init();
-
-        if( args.stopOnEntry ) 
-        {
-            this.sendResponse( response );
-
-            // we stop on the first line
-            //this.sendEvent( new StoppedEvent( "entry", DukDebugSession.THREAD_ID ) );
-        } 
-        else
-        {
-            // we just start to run until we hit a breakpoint or an exception
-            //this.continueRequest( response, { threadId: DukDebugSession.THREAD_ID } );
-        }
     }
     
     //-----------------------------------------------------------
@@ -506,7 +628,7 @@ class DukDebugSession extends DebugSession
         this._sourceRoot    = this.normPath( args.localRoot );
         this._remoteRoot    = this.normPath( args.remoteRoot );
         this._outDir        = this.normPath( args.outDir );
-        
+
         this.beginInit( response );
     }
     
@@ -515,16 +637,15 @@ class DukDebugSession extends DebugSession
     {
         this.dbgLog( "[FE] disconnectRequest" );
         
-        const timeoutMS = 2000;
+        const TIMEOUT_MS = 2000;
+        var disconnected:boolean = false;
         
-        var finished:boolean = false;
-        
-         var doDisconnect = () => {
+        var doDisconnect = () => {
             
-            if( finished )
+            if( disconnected )
                 return;
                 
-            finished = true;
+            disconnected = true;
             
             this.dbgLog( "Disconnecing Socket." );
             this._dukProto.disconnect();
@@ -534,62 +655,40 @@ class DukDebugSession extends DebugSession
         var timeoutID:NodeJS.Timer = setTimeout( () =>{
             
             clearTimeout( timeoutID );
-            if( finished )
+            if( disconnected )
                 return;
                 
             this.dbgLog( "Detach request took too long. Forcefully disconnecting." );
             doDisconnect();
             
-        }, timeoutMS );
+        }, TIMEOUT_MS );
         
         
         // Detach request after clearing all the breakpoints
         var doDetach = () => {
             
-            if( finished )
+            if( disconnected )
                 return;
                 
-            this._dukProto.requestDetach().then().catch( e=>{} )
-                .then( () => {
-                    doDisconnect();
-                });
+            this._dukProto.requestDetach()
+            .catch()
+            .then( () => doDisconnect() );
         };
         
-        
-        // Clear all breakpoints
-        var sources:SourceFile[] = [];
-        for( let k in this._sources )
-        {
-            let src:SourceFile = this._sources[k];
-            if( src.breakpoints && src.breakpoints.length > 0 )
-                sources.push( src );
-        }
-        
-        var clearSource = ( i:number ) => {
+        // Clear all breakpoints & disconnect
+        this.dbgLog( "Clearing breakpoints on target." );
+        this.removeAllTargetBreakpoints()
+        .catch()
+        .then( () => {
             
-            if( i >= sources.length )
-            {
-                // finished
-                doDetach();
+            if( disconnected )
                 return;
-            }  
-            
-            this.clearBreakPoints( sources[i] )
-                .then().catch( err =>{}).then( () =>{
-                    clearSource( i+1 );    
-                });
-        };
-        
-        if( sources.length > 0 )
-        {
-            this.dbgLog( "Clearing breakpoints on target." );
-            clearSource(0);
-        }
-        else
-        {
-            this.dbgLog( "No breakpoints. Detaching immediately." );
-            doDetach();
-        }
+                
+            this._dukProto.requestDetach()
+            .catch()
+            .then( () => doDisconnect() );
+        })
+        .catch();
     }
     
     //-----------------------------------------------------------
@@ -597,19 +696,114 @@ class DukDebugSession extends DebugSession
     {
         this.dbgLog( "[FE] setBreakPointsRequest" );
         
+        let filePath = Path.normalize( args.source.path );
+
         // Try to find the source file
-        var src:SourceFile = this.mapSourceFile( this.getSourceNameByPath( args.source.path ) );
-        
+        let src:SourceFile = this.unmapSourceFile( filePath );
+
         if( !src )
         {
-            this.dbgLog( "Unknown source file: " + args.source.path );
+            this.dbgLog( "Unknown source file: " + filePath);
             this.sendErrorResponse( response, 0, "SetBreakPoint failed" ); 
             return;
         }
         
-        var inBreaks  = args.breakpoints;        // Should be an array of "SourceBreakpoint"s
-        var outBreaks = new Array<Breakpoint>();
+        let inBreaks:DebugProtocol.SourceBreakpoint[]  = args.breakpoints;  // Breakpoints the file currently has set
+        let outBreaks:Breakpoint[]                     = [];                // Breakpoints to return as result
 
+        // Determine which breakpoints we're adding and which we are removing
+        // by comparing all the source's breakpoints on the breakpoint map with the arg's breakpoints.
+        let addBPs:DukBreakPoint[]  = [];
+        let remBPs:DukBreakPoint[]  = [];
+
+        let fileBPs:DukBreakPoint[] = this._breakpoints.getBreakpointsForFile( filePath );
+        
+        let successBPs:DukBreakPoint[] = [];   // List of successfully added breakpoints
+
+        // Convert the breakpoint lines first
+        inBreaks.forEach( b => b.line = this.convertClientLineToDebugger(b.line) );
+
+        // Get breakpoints to add
+        inBreaks.forEach( a => {
+            if( ArrayX.firstOrNull( fileBPs, b => a.line === b.line ) == null )
+                addBPs.push( new DukBreakPoint( filePath, a.line ) );
+        });
+
+        // Get breakpoints to remove
+        fileBPs.forEach( a => {
+            if( ArrayX.firstOrNull( inBreaks, b => a.line === b.line ) == null )
+                remBPs.push( a );
+        });      
+
+        // Prepare to remove and add breakpoints
+        let doRemoveBreakpoints: ( i:number ) => Promise<any>;
+        let doAddBreakpoints   : ( i:number ) => Promise<any>;
+
+        doRemoveBreakpoints = ( i:number ) =>
+        {
+            if( i >= remBPs.length )
+                return Promise.resolve();
+
+            return this._dukProto.requestRemoveBreakpoint( remBPs[i].dukIdx )
+            .catch() // Simply don't add the breakpoint if it failed.
+            .then(() => {
+                // Remove the next one
+                return doRemoveBreakpoints( i+1 );
+            });
+        };
+
+        doAddBreakpoints = ( i:number ) =>
+        {
+            if( i >= addBPs.length )
+                return Promise.resolve();
+            
+            let bp           :DukBreakPoint = addBPs[i];
+            let line         :number        = bp.line;
+            let generatedName:string        = null;
+
+            // Get the correct file and line
+            if( src.srcMap )
+            {
+                let pos       = src.source2Generated( filePath, line );
+                generatedName = pos.fileName;
+                line = pos.line;
+            }
+            
+            if( !generatedName )
+            {
+                // Cannot set breakpoint, go to the next one
+                return doAddBreakpoints( i+1 );
+            }
+
+            this._dukProto.requestSetBreakpoint( generatedName, line )
+            .then( (r:DukAddBreakResponse) => {
+                
+                /// Save the breakpoints to the file source
+                //this.dbgLog( "BRK: " + r.index + " ( " + bp.line + ")");
+                successBPs.push( bp );                
+            })
+            .catch() // Simply don't add the breakpoint if it failed.
+            .then(() => {
+                
+                // Go to the next one
+                return doAddBreakpoints( i+1 );
+            });
+        }
+
+        // Execute requests
+        doRemoveBreakpoints( 0 )
+        .then( () => doAddBreakpoints (0 ) )
+        .catch()
+        .then( () => {
+
+            // Update breakpoint map
+            this._breakpoints.removeBreakpoints( remBPs );
+            this._breakpoints.addBreakpoints( addBPs );
+        });
+
+        return;
+
+        /*
         var doRequest = ( i:number ) =>
         {
             if( i >= inBreaks.length )
@@ -620,17 +814,21 @@ class DukDebugSession extends DebugSession
             }
             
             var bp   = inBreaks[i];
-            let line = this.convertDebuggerLineToClient( bp.line );
-            let name = this.normPath( src.name );
+            let line = bp.line;
+            let name = this.normPath( args.source.name );
             
-            // Check if it has a source map
-            if( src.srcMapPath )
+            // Get the correct file and line
+            if( src.srcMap )
             {
-                try {
-                    let result  = this._sourceMaps.MapFromSource( src.path, bp.line, 0, Bias.LEAST_UPPER_BOUND );
-                    line = result.line;                    
-                }
-                catch( err ) {}
+                let pos = src.source2Generated( args.source.path, line );
+                name = pos.fileName;
+                line = pos.line;
+            }
+            else
+            {
+                // Cannot set breakpoint, go to the next one
+                doRequest( i+1 );
+                return;
             }
             
             this._dukProto.requestSetBreakpoint( name, line )
@@ -651,13 +849,13 @@ class DukDebugSession extends DebugSession
                 // Go to the next one
                 doRequest( i+1 );
             });
-            
         };
         
         // TODO: Only delete breakpoints that have been removed, not all the cached breakpoints.
         this.clearBreakPoints( src ).then().catch( e => {} ).then( () => {
             doRequest(0);
         });
+        */
     }
     
     //-----------------------------------------------------------
@@ -862,18 +1060,19 @@ class DukDebugSession extends DebugSession
                 let frame = dukframes[i];
                 
                 // Find source file
-                let srcFile = frame.source;
-                let src     = null;
+                let srcFile:SourceFile = frame.source;
+                let src    :Source     = null;
+
                 if( srcFile )
-                    src = new Source( srcFile.name, srcFile.path, srcFile.id );
+                    src = new Source( frame.fileName, frame.filePath, frame.lineNumber );
                 
                 let klsName  = frame.klass    == "" ? "" : frame.klass + ".";
                 let funcName = frame.funcName == "" ? "(anonymous function)" : frame.funcName + "()";
                 
                 //i: number, nm: string, src: Source, ln: number, col: number
                 frames[i] = new StackFrame( frame.handle,
-                                 klsName + funcName + " : " + frame.pc,
-                                 src, frame.lineNumber, frame.pc );
+                                klsName + funcName + " : " + frame.pc,
+                                src, frame.lineNumber, frame.pc );
             }
             
             response.body = { stackFrames: frames };
@@ -906,24 +1105,22 @@ class DukDebugSession extends DebugSession
             {
                 let entry = val.callStack[i];
                 
-                let srcFile:SourceFile = this.mapSourceFile( entry.fileName   );
-                let line = this.convertDebuggerLineToClient( entry.lineNumber );
+                let srcFile:SourceFile = this.mapSourceFile( entry.fileName );
+                let line   :number     = this.convertDebuggerLineToClient( entry.lineNumber );
                 
-                // Check if it has a source map
-                if( srcFile && srcFile.srcMapPath )
-                {
-                    try {
-                        let result  = this._sourceMaps.MapToSource( srcFile.srcMapPath, line, 0, Bias.LEAST_UPPER_BOUND );
-                        
-                        if( result)
-                            line = result.line;
-                    }
-                    catch( err ) {}
-                }
-                               
-                // Save stack frame with local vars
-                let frame = new DukStackFrame( srcFile, entry.fileName, entry.funcName, 
-                                               line, entry.pc, -i-1, null );
+                // Get correct info to display
+                let srcPos:SourceFilePosition = srcFile ?
+                    srcFile.generated2Source( line ) :
+                    {
+                        path     : entry.fileName,
+                        fileName : entry.fileName,
+                        line     : line
+                    };
+                                 
+                // Save stack frame to the state
+                let frame = new DukStackFrame( srcFile, srcPos.fileName, srcPos.path,
+                                               entry.funcName, srcPos.line, entry.pc,
+                                               -i-1, null );
                 
                 frame.handle = this._dbgState.stackFrames.create( frame );
                 dukframes[i] = frame;
@@ -1216,71 +1413,21 @@ class DukDebugSession extends DebugSession
     {
         
     }
-    
-    //-----------------------------------------------------------
-    // Clear all breakpoints for a source file
-    private clearBreakPoints( src:SourceFile ) : Promise<any>
-    {
-        if( src.breakpoints.length < 1 )
-            return Promise.resolve();
-        
-        // TODO: Check a flag on the source file to see if it's busy setting/removing
-        // breakpoints? To make sure that no brakpoint attempts are done while working
-        // on a request still?
-        
-        var bpList = src.breakpoints;
-        src.breakpoints = new Array<DukBreakPoint>();
-                
-        var pcontext = { resolve: undefined, reject: undefined };
-        
-        let cb = ( resolve, reject ) =>
-        {
-            pcontext.resolve = resolve;
-            pcontext.reject  = reject;
-        };
-        
-        var p = new Promise<any>( cb );
-        
-        var removeBP = ( i:number ) => {
-            
-            try {
-                this._dukProto.requestRemoveBreakpoint( bpList[i].dukIdx )
-                .then().catch( (err) =>{})
-                    .then( () => {      // Ignore result
-                        
-                        i --;
-                        if( i > -1 )
-                            removeBP( i );      // Go to the next one
-                        else
-                            pcontext.resolve(); // Done
-                });
-            }
-            catch( err )
-            {
-                this.dbgLog( "an error " + err);
-            }
-        };
-        
-        // Duk keeps an index-based breakpoints,
-        // so we must start from the top-most,
-        // otherwise we'll end-up with invalid breakpoint indices
-        removeBP( bpList.length-1 );
-        
-        return p;
-    }
-    
+
     //-----------------------------------------------------------
     private removeAllTargetBreakpoints() : Promise<any>
     {
         this.dbgLog( "removeAllTargetBreakpoints" );
         
+        // We simply clear out breakpoints and we remove the server's breakpoints
+        // based on the info we get from the debug server. In case of corruption.
+        this._breakpoints._breakpoints = [];
+
         var numBreakpoints:number = 0;
-        
+
         return this._dukProto.requestListBreakpoints()
-            .then( resp => {
-                
-                let r = <DukListBreakResponse>resp;
-                
+            .then( (r:DukListBreakResponse) => {
+                                
                 numBreakpoints = r.breakpoints.length;
                 
                 if( numBreakpoints < 1 )
@@ -1297,7 +1444,7 @@ class DukDebugSession extends DebugSession
                     promises[i] = this._dukProto.requestRemoveBreakpoint( numBreakpoints-- );
                     
                 return Promise.all( promises );
-            } );
+            });
     }
     
     //-----------------------------------------------------------
@@ -1643,22 +1790,87 @@ class DukDebugSession extends DebugSession
                 return val;   
         }
         
-        let fpath = this.normPath( Path.join( this._sourceRoot, name ) );
+        let fpath; 
+        if( this._args.sourceMaps )
+            fpath = this.normPath( Path.join( this._outDir, name ) );
+        else
+            fpath = this.normPath( Path.join( this._sourceRoot, name ) );
+
         if( !FS.existsSync( fpath ) )
             return null;
         
         let src:SourceFile = new SourceFile();
-        src.id   = this._dbgState.nextSrcID ++;
+        src.id   = this._nextSourceID ++;
         src.name = name;
         src.path = fpath;
         
-        // Grab the source map, if it has any
-        try { this.checkForSourceMap( src );
-        } catch( err ){}
-        
         sources[src.id]   = src;
         sources[src.name] = src;
+
+        // Grab the source map, if it has any
+        try { 
+            this.checkForSourceMap( src );
+            if( src.srcMap )
+            {
+                // Create a generated-to-oiriginal lookup
+                // entry for each file in the source map.
+                let srcMap = src.srcMap;
+                for( let i = 0; i < srcMap._sources.length; i++ )
+                {
+                    let srcPath = Path.normalize( Path.join( this._sourceRoot, srcMap._sources[i] ) );
+                    this._sourceToGen[srcPath] = src;
+                }
+            }
+
+        } catch( err ){}
+        
+       
         return src;
+    }
+
+    //-----------------------------------------------------------
+    // Given the original filename, looks for a
+    // src-to-gen mapped SourceFile that has that name.
+    // If id doesn't find one, it looks into 
+    // the source maps of all the generated files 
+    // and attempts to find the file in them
+    //-----------------------------------------------------------
+    private unmapSourceFile( path:string ) : SourceFile
+    {
+        path        = Path.normalize( path );
+        let name    = Path.basename( path );
+
+        if( !this._sourceMaps )
+            return this.mapSourceFile( name );
+        
+        let src2gen = this._sourceToGen;
+        
+        // Attempt a reverse lookup first
+        if( src2gen[path] )
+            return src2gen[path];
+        
+        let src:SourceFile = null;
+
+        // If we still haven't found anything,
+        // we try to map all the source files in the outDir
+        let files:string[] = FS.readdirSync( this._outDir );
+
+        for( let i = 0; i < files.length; i++ )
+        {
+            let f:string = files[i];
+            
+            // Ignore non-js files
+            if( f.toLowerCase().lastIndexOf(".js") != f.length - ".js".length )
+                continue;
+
+            var stat = FS.lstatSync( Path.join( this._outDir, f ) );
+            if( stat.isDirectory() )        // Ignore dirs, shallow search
+                continue;
+            
+            src = this.mapSourceFile( f );
+            if( src )
+                return src;
+        }
     }
     
     //-----------------------------------------------------------
@@ -1666,8 +1878,9 @@ class DukDebugSession extends DebugSession
     {
         if( !this._args.sourceMaps )
             return;
-            
-        src.srcMapPath = this._sourceMaps.MapPathFromSource( src.path );
+        
+        src.srcMap     = this._sourceMaps.MapPathFromSource( src.path );
+        src.srcMapPath = src.srcMap.generatedPath();
     }
     
     //-----------------------------------------------------------

@@ -29,7 +29,7 @@ export interface ISourceMaps {
 	 * Map source language path to generated path.
 	 * Returns null if not found.
 	 */
-	MapPathFromSource(path: string): string;
+	MapPathFromSource(path: string): SourceMap;
 
 	/*
 	 * Map location in source language to location in generated code.
@@ -59,11 +59,11 @@ export class SourceMaps implements ISourceMaps {
 		this._generatedCodeDirectory = generatedCodeDirectory;
 	}
 
-	public MapPathFromSource(pathToSource: string): string 
+	public MapPathFromSource(pathToSource: string):SourceMap 
     {
 		var map = this._findSourceToGeneratedMapping(pathToSource);
 		if (map)
-			return map.generatedPath();
+			return map;
 		return null;
 	}
 
@@ -330,11 +330,11 @@ export class SourceMaps implements ISourceMaps {
 
 export class SourceMap {
 
-	private _sourcemapLocation: string;	// the directory where this sourcemap lives
-	private _generatedFile: string;		// the generated file to which this source map belongs to
-	private _sources: string[];			// the sources of the generated file (relative to sourceRoot)
-	private _sourceRoot: string;			// the common prefix for the source (can be a URL)
-	private _smc: SourceMapConsumer;		// the source map
+	public _sourcemapLocation: string;	// the directory where this sourcemap lives
+	public _generatedFile: string;		// the generated file to which this source map belongs to
+	public _sources: string[];			// the sources of the generated file (relative to sourceRoot)
+	public _sourceRoot: string;			// the common prefix for the source (can be a URL)
+	public _smc: SourceMapConsumer;		// the source map
 
 
 	public constructor(mapPath: string, generatedPath: string, json: string) {
@@ -419,7 +419,7 @@ export class SourceMap {
 	 * returns the first entry from the sources array that matches the given absPath
 	 * or null otherwise.
 	 */
-	private findSource(absPath: string): string {
+	public findSource(absPath: string): string {
 		// on Windows change back slashes to forward slashes because the source-map library requires this
 		if (process.platform === 'win32') {
 			absPath = absPath.replace(/\\/g, '/');

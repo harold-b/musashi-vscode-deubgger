@@ -20,7 +20,7 @@
         
         
         {
-            "preLaunchTask"     : "tsc",
+            //"preLaunchTask"     : "tsc",
             
 			"name"        : "DukDebug server",
 			"type"        : "node",
