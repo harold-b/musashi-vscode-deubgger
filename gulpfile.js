@@ -1,64 +1,95 @@
 
-var gulp        = require( 'gulp' );
-var path        = require( 'path' );
-var tsb         = require( 'gulp-tsb' );
-var del         = require( 'del' );
-var tsc         = require( "./tsc.js" );
-var runSequence = require( 'run-sequence' );
-//var compilation = tsb.create( path.join(__dirname, "src/tsconfig.json" ), false );
+var gulp            = require( "gulp"            );
+var path            = require( "path"            );
+var del             = require( "del"             );
+var ts              = require( "gulp-typescript" );
+var sourcemaps      = require( "gulp-sourcemaps" );
+var runSequence     = require( "run-sequence"    );
+var through         = require( "through2"        );
+var uglifyJS        = require( "uglify-js"       );
 
+// Config
+var SRC_ROOT      = "./src";
+var OUT_DIR       = "./out";
+var TS_CFG_PATH   = SRC_ROOT + "/tsconfig.json";
 
-
-/// Vars
-var sources = [ "src/**/*.ts" ];
-var outPath = "out";
+// Create TS project
+var tsCfg = ts.createProject( TS_CFG_PATH, {
+    noEmitOnError : true,
+    sortOutput    : true
+});
 
 
 /// Methods
-///*
-function execLog( onFinished )
+function uglifyOutput( mangle )
 {
-    var logger = function( err, stdout, stderr )
-    {
-        console.log( stdout );
-        console.log (stderr );
+    return through.obj( function(file, encoding, cb) {
 
-        if( onFinished )
-            onFinished(err);
+        if( file.isNull() ) 
+            return cb( null, file )
+        
+        var opts = {
+            fromString       : true,
+            mangle           : mangle,
+            sourceRoot       : "../src",
+            inSourceMap      : file.sourceMap,
+            outSourceMap     : file.basename + ".map"
+        };
+
+        if( file.isStream() ) {
+            throw new Error( "Build Pipeline: Cannot handle streams." );
+        }
+
+        let fstr   = file.contents.toString();
+        let inFile = {}
+        inFile[file.basename] = file.contents.toString();
+
+        var result = uglifyJS.minify( inFile, opts );
+        file.contents  = new Buffer( result.code );
+        file.sourceMap = JSON.parse( result.map );
+        
+        cb( null, file );
+    });
+}
+
+function compile( opts )
+{
+    return function() {
+        opts = opts || {
+
+            minify: false,
+            mangle: false
+        };
+
+        // Compile Typescript
+        var tsResult = tsCfg.src()
+            .pipe( sourcemaps.init() )
+            .pipe( ts( tsCfg ) );
+        
+        var r = tsResult.js;
+
+        // Minify & mangle
+        if( opts.minify )
+            r.pipe( uglifyOutput() );
+
+        // Write sourceMaps and output
+        r.pipe( sourcemaps.write( ".", {
+            includeContent: false, 
+            sourceRoot: "../src"
+        } ))
+        .pipe( gulp.dest( OUT_DIR ) );
+
+        return r;
     }
-
-    return logger;
 }
-
-function compileTSProject()
-{
-
-    var r = tsc.compile( "./src/tsconfig.json" );
-    if( r == 0 )
-        console.log( "Typescript Combile Success." );
-    else
-        console.log( "Typescript Compilation Failed." );
-    /*
-    var exec = require('child_process').exec;
-    exec( "tsc -p ./src", execLog( function(err){
-        if( err )
-            console.log( "Typescript compilation failed." );
-        else
-            console.log( "Typescript Success." );
-    }));
-    */
-}
-
 
 /// Tasks
+gulp.task( "build", compile() );
 
-gulp.task( "build", function( callback ) {
-    //runSequence( "clean", "compile", callback );
-    runSequence( "clean", "tsc", callback );
-});
+gulp.task( "build-release", compile({ minify:true, mangle:true }) );
 
 gulp.task( "clean", function() {
-	return del( ['out/**'] );
+	return del( [OUT_DIR+"/**"] );
 });
 
 gulp.task( "watch", ["build"], function() {
@@ -67,33 +98,7 @@ gulp.task( "watch", ["build"], function() {
 
 gulp.task( "lint", function() {
    var tslint      = require( 'gulp-tslint' );
-   return gulp.src( "./src/*.ts" )
+   return gulp.src( SRC_ROOT + "/*.ts" )
             .pipe( tslint() )
             .pipe( tslint.report("verbose") ); 
 });
-
-
-/// Internal
-gulp.task( "compile", function() {
-   return gulp.src( sources, { base: '.' } )
-        //.pipe( compilation() )
-        .pipe( gulp.dest(outPath) );
-});
-
-
-
-/// Old Tasks
-///*
-gulp.task( "tsc", function() {
-    compileTSProject();
-});
-
-gulp.task( "tsc_watch", function(cb) {
-    gulp.watch("cl_src/*.ts", function(event) {
-        //console.log('File ' + event.path + ' was ' + event.type + ', running tasks...');
-        console.log("Recompiling ts files.");
-        compileTSProject();
-    })
-    cb();
-});
-//*/

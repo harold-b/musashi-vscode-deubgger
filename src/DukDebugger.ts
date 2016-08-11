@@ -104,7 +104,7 @@ export interface AttachRequestArguments extends CommonArguments {
 // Debug ( To debug the debgger ) consts
 const enum DebugConsts
 {
-    TRACE = 1
+    TRACE = 0
 }
 
 // Utitity
@@ -391,6 +391,7 @@ class DukDebugSession extends DebugSession
     
     private _args           :CommonArguments;
 
+    private _nextSourceID   :number         = 1;
     private _sources        :{};                // Key/Value pairs of fileName/SourceFile
     private _sourceMaps     :SourceMaps;        // SourceMap utility
     private _sourceToGen    :{};                // Key/Value pairs of source filePath/SourceFile
@@ -398,9 +399,9 @@ class DukDebugSession extends DebugSession
                                                 // The SourceFile they point to is the SourceFile to
                                                 // the generated file. Original sources do not get
                                                 // a SourceFile assigned to them.
-    private _nextSourceID   :number         = 1;
 
-    private _breakpoints:BreakPointMap = new BreakPointMap();    // Holds all active breakpoints
+    // Holds all active breakpoints
+    private _breakpoints   :BreakPointMap = new BreakPointMap();
 
     private _launchType     :LaunchType;
     private _targetProgram  :string;
