@@ -487,7 +487,13 @@ class DukDebugSession extends DebugSession
                 //this._dbgState.reset();
 
                 if( this._dbgState.paused )
-                    this.sendEvent( new ContinuedEvent( DukDebugSession.THREAD_ID, true) );
+                {
+                    // NOTE: Not doing this because it seems to cause issues.
+                    // it suddenly continues unexpectedly, even if calling this event
+                    // in correct synchronized order.
+                    //this.dbgLog( "Sending CONTINUE event to FE");
+                    //this.sendEvent( new ContinuedEvent( DukDebugSession.THREAD_ID, true) );
+                }
 
                 this._dbgState.paused = false;
             }
