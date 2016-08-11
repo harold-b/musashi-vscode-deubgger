@@ -631,11 +631,26 @@ class DukDebugSession extends DebugSession
     {
         this.dbgLog( "[FE] attachRequest" );
         
+        if( !args.localRoot || args.localRoot === "" )
+        {
+            this.sendErrorResponse( response, 0,
+                "Must specify a localRoot`" );
+            return;
+        }
+        
+        if( args.sourceMaps && (!args.outDir || args.outDir === "") )
+        {
+            this.sendErrorResponse( response, 0,
+                "Must specify an 'outDir' when 'sourceMaps' is enabled.`" );
+            return;
+        }
+
         this._args          = args;
         this._launchType    = LaunchType.Attach;
-        this._sourceRoot    = this.normPath( args.localRoot );
+        this._sourceRoot    = this.normPath( args.localRoot  );
         this._remoteRoot    = this.normPath( args.remoteRoot );
-        this._outDir        = this.normPath( args.outDir );
+        this._outDir        = this.normPath( args.outDir     );
+
 
         this.beginInit( response );
     }
@@ -645,7 +660,7 @@ class DukDebugSession extends DebugSession
     {
         this.dbgLog( "[FE] disconnectRequest" );
         
-        const TIMEOUT_MS = 2000;
+        const TIMEOUT_MS:number  = 2000;
         var disconnected:boolean = false;
         
         var doDisconnect = () => {

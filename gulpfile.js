@@ -7,11 +7,13 @@ var sourcemaps      = require( "gulp-sourcemaps" );
 var runSequence     = require( "run-sequence"    );
 var through         = require( "through2"        );
 var uglifyJS        = require( "uglify-js"       );
+var fs              = require( "fs-extra"        );
 
 // Config
 var SRC_ROOT      = "./src";
 var OUT_DIR       = "./out";
 var TS_CFG_PATH   = SRC_ROOT + "/tsconfig.json";
+var EXT_OUT_DIR   = "./builds";
 
 // Create TS project
 var tsCfg = ts.createProject( TS_CFG_PATH, {
@@ -52,41 +54,68 @@ function uglifyOutput( mangle )
     });
 }
 
+function preparePipeline( opts )
+{
+    opts = opts || {
+        minify: false,
+        mangle: false
+    };
+
+    // Compile Typescript
+    var tsResult = tsCfg.src()
+        .pipe( sourcemaps.init() )
+        .pipe( ts( tsCfg ) );
+    
+    var r = tsResult.js;
+
+    // Minify & mangle
+    if( opts.minify )
+        r.pipe( uglifyOutput() );
+
+    // Write sourceMaps and output
+    r.pipe( sourcemaps.write( ".", {
+        includeContent: false, 
+        sourceRoot: "../src"
+    } ))
+    .pipe( gulp.dest( OUT_DIR ) );
+
+    return r;
+}
+
 function compile( opts )
 {
     return function() {
-        opts = opts || {
-
-            minify: false,
-            mangle: false
-        };
-
-        // Compile Typescript
-        var tsResult = tsCfg.src()
-            .pipe( sourcemaps.init() )
-            .pipe( ts( tsCfg ) );
-        
-        var r = tsResult.js;
-
-        // Minify & mangle
-        if( opts.minify )
-            r.pipe( uglifyOutput() );
-
-        // Write sourceMaps and output
-        r.pipe( sourcemaps.write( ".", {
-            includeContent: false, 
-            sourceRoot: "../src"
-        } ))
-        .pipe( gulp.dest( OUT_DIR ) );
-
-        return r;
+        return preparePipeline( opts );
     }
 }
+
+function packageRelease()
+{
+    console.log( "Packaging extension..." );
+
+    var copyDirs = [
+        "./out"
+    ];
+
+    package.json = fs.readSync
+    //var outDir = path.normalize(path.join(EXT_OUT_DIR)_;
+
+}
+
+function buildRelease()
+{
+    var pipeline = preparePipeline({ minify:true, mangle:true });
+    pipeline.on( "end", packageRelease );
+
+    return function() { return pipeline; };
+}
+
+
 
 /// Tasks
 gulp.task( "build", compile() );
 
-gulp.task( "build-release", compile({ minify:true, mangle:true }) );
+gulp.task( "build-release", buildRelease() );
 
 gulp.task( "clean", function() {
 	return del( [OUT_DIR+"/**"] );
