@@ -104,7 +104,7 @@ export interface AttachRequestArguments extends CommonArguments {
 // Debug ( To debug the debgger ) consts
 const enum DebugConsts
 {
-    TRACE = 0
+    TRACE = 1
 }
 
 // Utitity
@@ -197,7 +197,7 @@ class BreakPointMap
         for( let i = bps.length-1; i >= 0; i-- )
         {
             if( bps[i] == null )
-                bps.splice(i);
+                bps.splice(i,1);
         }
 
         // Reset IDs
@@ -554,6 +554,7 @@ class DukDebugSession extends DebugSession
         
         this._sources     = {};
         this._sourceToGen = {};
+        this._breakpoints._breakpoints = [];
 
         if( this._args.sourceMaps )
             this._sourceMaps = new SourceMaps( this._outDir );
@@ -676,6 +677,8 @@ class DukDebugSession extends DebugSession
         };
         
         // Clear all breakpoints & disconnect
+        this._breakpoints._breakpoints = [];
+
         this.dbgLog( "Clearing breakpoints on target." );
         this.removeAllTargetBreakpoints()
         .catch()
@@ -709,16 +712,15 @@ class DukDebugSession extends DebugSession
         }
         
         let inBreaks:DebugProtocol.SourceBreakpoint[]  = args.breakpoints;  // Breakpoints the file currently has set
-        let outBreaks:Breakpoint[]                     = [];                // Breakpoints to return as result
 
         // Determine which breakpoints we're adding and which we are removing
         // by comparing all the source's breakpoints on the breakpoint map with the arg's breakpoints.
         let addBPs:DukBreakPoint[]  = [];
         let remBPs:DukBreakPoint[]  = [];
 
-        let fileBPs:DukBreakPoint[] = this._breakpoints.getBreakpointsForFile( filePath );
-        
+        let fileBPs:DukBreakPoint[]    = this._breakpoints.getBreakpointsForFile( filePath );
         let successBPs:DukBreakPoint[] = [];   // List of successfully added breakpoints
+        let persistBPs:DukBreakPoint[] = [];
 
         // Convert the breakpoint lines first
         inBreaks.forEach( b => b.line = this.convertClientLineToDebugger(b.line) );
@@ -733,7 +735,13 @@ class DukDebugSession extends DebugSession
         fileBPs.forEach( a => {
             if( ArrayX.firstOrNull( inBreaks, b => a.line === b.line ) == null )
                 remBPs.push( a );
-        });      
+        });
+
+        // Get breakpoints that will persist
+        fileBPs.forEach( a => {
+            if( !ArrayX.firstOrNull( remBPs, b => a.line === b.line ) )
+                persistBPs.push( a );
+        });
 
         // Prepare to remove and add breakpoints
         let doRemoveBreakpoints: ( i:number ) => Promise<any>;
@@ -775,7 +783,7 @@ class DukDebugSession extends DebugSession
                 return doAddBreakpoints( i+1 );
             }
 
-            this._dukProto.requestSetBreakpoint( generatedName, line )
+            return this._dukProto.requestSetBreakpoint( generatedName, line )
             .then( (r:DukAddBreakResponse) => {
                 
                 /// Save the breakpoints to the file source
@@ -792,70 +800,24 @@ class DukDebugSession extends DebugSession
 
         // Execute requests
         doRemoveBreakpoints( 0 )
-        .then( () => doAddBreakpoints (0 ) )
+        .then( () => doAddBreakpoints( 0 ) )
         .catch()
         .then( () => {
 
             // Update breakpoint map
             this._breakpoints.removeBreakpoints( remBPs );
-            this._breakpoints.addBreakpoints( addBPs );
-        });
+            this._breakpoints.addBreakpoints( successBPs );
 
-        return;
+            // Send response
+            successBPs = persistBPs.concat( successBPs );
 
-        /*
-        var doRequest = ( i:number ) =>
-        {
-            if( i >= inBreaks.length )
-            {
-                response.body = { breakpoints: outBreaks };
-                this.sendResponse( response );
-                return;
-            }
+            let outBreaks = new Array<Breakpoint>( successBPs.length );
+            for( let i = 0; i < successBPs.length; i++ )
+                outBreaks[i] = new Breakpoint( true, successBPs[i].line)
             
-            var bp   = inBreaks[i];
-            let line = bp.line;
-            let name = this.normPath( args.source.name );
-            
-            // Get the correct file and line
-            if( src.srcMap )
-            {
-                let pos = src.source2Generated( args.source.path, line );
-                name = pos.fileName;
-                line = pos.line;
-            }
-            else
-            {
-                // Cannot set breakpoint, go to the next one
-                doRequest( i+1 );
-                return;
-            }
-            
-            this._dukProto.requestSetBreakpoint( name, line )
-                .then( resp => {
-                
-                /// Save the breakpoints to the file source
-                let r = <DukAddBreakResponse>resp;
-                
-                src.breakpoints.push( new DukBreakPoint( r.index, bp.line ) );
-                //this.dbgLog( "BRK: " + r.index + " ( " + bp.line + ")");
-                
-                outBreaks.push( new Breakpoint( true, bp.line ) );
-                
-            }).catch( err => {
-                // Simply don't add the breakpoint if it failed.
-            }).then(() => {
-                
-                // Go to the next one
-                doRequest( i+1 );
-            });
-        };
-        
-        // TODO: Only delete breakpoints that have been removed, not all the cached breakpoints.
-        this.clearBreakPoints( src ).then().catch( e => {} ).then( () => {
-            doRequest(0);
+            response.body = { breakpoints: outBreaks };
+            this.sendResponse( response );
         });
-        */
     }
     
     //-----------------------------------------------------------
@@ -1418,10 +1380,6 @@ class DukDebugSession extends DebugSession
     private removeAllTargetBreakpoints() : Promise<any>
     {
         this.dbgLog( "removeAllTargetBreakpoints" );
-        
-        // We simply clear out breakpoints and we remove the server's breakpoints
-        // based on the info we get from the debug server. In case of corruption.
-        this._breakpoints._breakpoints = [];
 
         var numBreakpoints:number = 0;
 
