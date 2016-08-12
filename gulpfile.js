@@ -7,7 +7,6 @@ var sourcemaps      = require( "gulp-sourcemaps" );
 var runSequence     = require( "run-sequence"    );
 var through         = require( "through2"        );
 var uglifyJS        = require( "uglify-js"       );
-var fs              = require( "fs-extra"        );
 
 // Config
 var SRC_ROOT      = "./src";
@@ -96,15 +95,11 @@ function packageRelease()
     var copyDirs = [
         "./out"
     ];
-
-    package.json = fs.readSync
-    //var outDir = path.normalize(path.join(EXT_OUT_DIR)_;
-
 }
 
 function buildRelease()
 {
-    var pipeline = preparePipeline({ minify:true, mangle:true });
+    var pipeline = preparePipeline();//{ minify:true, mangle:true });
     pipeline.on( "end", packageRelease );
 
     return function() { return pipeline; };

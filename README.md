@@ -1,4 +1,4 @@
-# Musashi Framework VSCode Debugger for Duktape
+# VSCode Debugger for Duktape Runtimes
 
 ## Greetings
 Greetings! And peace be with you in the name of our Lord Yeshua, the Messiah.
