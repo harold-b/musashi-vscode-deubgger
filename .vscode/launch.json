@@ -27,9 +27,9 @@
 			"name"        : "Debug Gulp Pipeline",
 			"type"        : "node",
 			"stopOnEntry" : false,
-			//"program"     : "${workspaceRoot}/node_modules/gulp/bin/gulp.js",
-			"program"     : "${workspaceRoot}/makeExtension.js",
-			"args"        : [ "build-release" ],
+			"program"     : "${workspaceRoot}/node_modules/gulp/bin/gulp.js",
+			//"program"     : "${workspaceRoot}/makeExtension.js",
+			"args"        : [ "build" ],
 			"cwd"         : "${workspaceRoot}",
 			"sourceMaps"  : false
 		},

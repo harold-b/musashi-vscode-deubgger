@@ -83,9 +83,7 @@ function preparePipeline( opts )
 
 function compile( opts )
 {
-    return function() {
-        return preparePipeline( opts );
-    }
+    return function() { return preparePipeline( opts ); }
 }
 
 function packageRelease()
@@ -99,10 +97,11 @@ function packageRelease()
 
 function buildRelease()
 {
-    var pipeline = preparePipeline();//{ minify:true, mangle:true });
-    pipeline.on( "end", packageRelease );
-
-    return function() { return pipeline; };
+    return function() { 
+        var pipeline = preparePipeline();//{ minify:true, mangle:true });
+        pipeline.on( "end", packageRelease );
+        return pipeline; 
+    };
 }
 
 

@@ -21,6 +21,7 @@ import {
     DukDbgProtocol,
     DukEvent,
     DukStatusState,
+    DukScopeMask,
     
     /// Notifications
     DukStatusNotification,
@@ -84,7 +85,6 @@ export interface LaunchRequestArguments extends CommonArguments {
     /** If true launch the target in an external console. */
     externalConsole?: boolean;
 }
-
 
 // This interface should always match the schema found in the node-debug extension manifest.
 export interface AttachRequestArguments extends CommonArguments {
@@ -303,6 +303,9 @@ class PropertySet
 
     public heapPtr   :Duk.TValPointer;
     public variables :Variable[];
+
+    // Object class type ( for Object set types )
+    public classType :Duk.HObjectClassID = Duk.HObjectClassID.UNUSED;
     
     public constructor( type:PropertySetType )
     {
@@ -419,6 +422,8 @@ class DukDebugSession extends DebugSession
     
     private _expectingBreak    :string = "debugger";
     private _expectingContinue :boolean = false;
+
+    private _scopeMask:DukScopeMask = DukScopeMask.AllButGlobals;
   
     //-----------------------------------------------------------
     public constructor()
@@ -1048,7 +1053,7 @@ class DukDebugSession extends DebugSession
                 let src    :Source     = null;
 
                 if( srcFile )
-                    src = new Source( frame.fileName, frame.filePath, frame.lineNumber );
+                    src = new Source( frame.fileName, frame.filePath, 0 );
                 
                 let klsName  = frame.klass    == "" ? "" : frame.klass + ".";
                 let funcName = frame.funcName == "" ? "(anonymous function)" : frame.funcName + "()";
@@ -1130,73 +1135,10 @@ class DukDebugSession extends DebugSession
         this.dbgLog( "[FE] scopesRequest" );
         assert( this._dbgState.paused );
 
-        /// +TEST
-        this.scopeRequestForLocals( args.frameId, response, args );
-        return;
-        //// -TEST
-        
-        const stackFrameHdl = args.frameId;
-        let   stackFrame    = this._dbgState.stackFrames.get( stackFrameHdl );
-        
-        // Prepare DukScope objects
-        const names     = [ "Local", "Closure", "Global" ];
-        let   dukScopes = new Array<DukScope>( names.length );
-        
-        for( let i=0; i < names.length; i++ )
-        {
-            let scope    = new DukScope( names[i], stackFrame, null );
-            scope.handle = this._dbgState.scopes.create( scope );
-            
-            dukScopes[i] = scope;
-        }
-        stackFrame.scopes = dukScopes;
-        
-        // Ask Duktape for the scope property keys for this stack frame
-        var scopes:Scope[] = [];
-        
-        this._dukProto.requestClosures( stackFrame.depth )
-        .then( ( r:DukGetClosureResponse ) => {
-        
-            let keys = [ r.local, r.closure, r.global ];
-            let propPromises:Promise<PropertySet>[] = [];
-            
-            // Append 'this' to local scope, if it's not global
-            return this.isGlobalObjectByName( "this", stackFrame.depth )
-            .then( (isGlobal:boolean ) => {
-                
-                if( !isGlobal )
-                    r.local.unshift( "this" );
-                    
-                // Create a PropertySet from each scope
-                for( let i=0; i < names.length; i++ )
-                {
-                    if( keys[i].length == 0 )
-                        continue;
-                    
-                    propPromises.push( this.expandScopeProperties( keys[i], dukScopes[i] ) );
-                }
-                
-                if( propPromises.length > 0 )
-                {
-                    return Promise.all( propPromises ).then( (results:PropertySet[]) => {
-                        
-                        for( let i=0; i < results.length; i++ )
-                            scopes.push( new Scope( results[i].scope.name, 
-                                         results[i].handle, results[i].scope.name == "Global" ) );
-                    });
-                }
-            });
-        })
-        .then( () => {
-            response.body = { scopes: scopes };
-            this.sendResponse( response );
-        })
-        .catch( err => {
-            
-            this.dbgLog( "scopesRequest failed: " + err );
-            response.body = { scopes: [] };
-            this.sendResponse( response );
-        });
+        if( !this._args.isMusashi )
+            this.scopeRequestForLocals( args.frameId, response, args );
+        else
+            this.scopeRequestForMultiple( args.frameId, response, args );
     }
     
     //-----------------------------------------------------------
@@ -1244,8 +1186,14 @@ class DukDebugSession extends DebugSession
                                aNum > bNum ? 1 : 0;
                     }
 
+                    if( a.name[0] === "_" ) return -1;
+                    if( b.name[0] === "_" ) return 1;
+
+                    if( a.name === "this" ) return -1;
+                    if( b.name === "this" ) return 1;
+
                     return a.name < b.name ? -1 :
-                        a.name > b.name ? 1 : 0;
+                           a.name > b.name ? 1 : 0;
                 });
             }
 
@@ -1277,44 +1225,7 @@ class DukDebugSession extends DebugSession
         let x = args.expression;
         if( x.indexOf( "cmd:") == 0 )
         {
-            let cmd    = x.substr( "cmd:".length );
-            let result = "";
-            
-            switch( cmd )
-            {
-                default :
-                    this.requestFailedResponse( response, "Unknown command: " + cmd );
-                return;
-                
-                case "breakpoints" :
-                {
-                    this._dukProto.requestListBreakpoints()
-                        .then( resp => {
-                            
-                            let r = <DukListBreakResponse>resp;
-                            this.dbgLog( "Breakpoints: " + r.breakpoints.length );
-                            for( let i = 0; i < r.breakpoints.length; i++ )
-                            {
-                                let bp   = r.breakpoints[i];
-                                let line = ( "[" + i + "] " + bp.fileName + ": " + bp.line );
-                                
-                                this.dbgLog( line );  
-                                result += ( line + "\n" );
-                            }
-                            
-                        }).catch( err => {
-                            this.requestFailedResponse( response, "Failed: " + err );
-                        });
-                }
-                break;
-            }
-            
-            response.body = {
-                result: result,
-                variablesReference: 0
-            };
-            
-            this.sendResponse( response );
+            this.handleCommandLine( response, args );
         }
         else
         {
@@ -1393,9 +1304,170 @@ class DukDebugSession extends DebugSession
     //-----------------------------------------------------------
     // Musashi-specific mod
     //-----------------------------------------------------------
-    private scopeRequestByClosure( response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments ):void
+    private scopeRequestForMultiple( stackFrameHdl:number, response:DebugProtocol.ScopesResponse, args:DebugProtocol.ScopesArguments ):void
     {
+        let stackFrame = this._dbgState.stackFrames.get( stackFrameHdl );
         
+        // Prepare DukScope objects
+        const names     = [ "Local", "Closure", "Global" ];
+        let   dukScopes = new Array<DukScope>( names.length );
+        
+        for( let i=0; i < names.length; i++ )
+        {
+            let scope    = new DukScope( names[i], stackFrame, null );
+            scope.handle = this._dbgState.scopes.create( scope );
+            
+            dukScopes[i] = scope;
+        }
+        stackFrame.scopes = dukScopes;
+        
+        // Ask Duktape for the scope property keys for this stack frame
+        var scopes:Scope[] = [];
+        
+        this._dukProto.requestClosures( this._scopeMask, stackFrame.depth )
+        .then( ( r:DukGetClosureResponse ) => {
+        
+            let keys = [ r.local, r.closure, r.global ];
+            let propPromises:Promise<PropertySet>[] = [];
+            
+            // Append 'this' to local scope, if it's not global
+            return this.isGlobalObjectByName( "this", stackFrame.depth )
+            .then( (isGlobal:boolean ) => {
+                
+                if( !isGlobal )
+                    r.local.unshift( "this" );
+                    
+                // Create a PropertySet from each scope
+                for( let i=0; i < names.length; i++ )
+                {
+                    if( keys[i].length == 0 )
+                        continue;
+                    
+                    propPromises.push( this.expandScopeProperties( keys[i], dukScopes[i] ) );
+                }
+                
+                if( propPromises.length > 0 )
+                {
+                    return Promise.all( propPromises )
+                    .then( (results:PropertySet[]) => {
+                        
+                        for( let i=0; i < results.length; i++ )
+                            scopes.push( new Scope( results[i].scope.name, 
+                                         results[i].handle, 
+                                         results[i].scope.name == "Global" )
+                            );
+                    });
+                }
+            });
+        })
+        .then( () => {
+            response.body = { scopes: scopes };
+            this.sendResponse( response );
+        })
+        .catch( err => {
+            
+            this.dbgLog( "scopesRequest failed: " + err );
+            response.body = { scopes: [] };
+            this.sendResponse( response );
+        });
+    }
+
+    //-----------------------------------------------------------
+    // Parse command-line command 
+    //-----------------------------------------------------------
+    private handleCommandLine( response:DebugProtocol.EvaluateResponse, feArgs:DebugProtocol.EvaluateArguments ):void
+    {
+        const x = feArgs.expression;
+
+        let args:string[];
+        let cmd:string;
+        let result:string = "";
+        
+        let requireArg = ( i:number ) => {
+            if( i < 0 )
+                i = args.length-i;
+
+            if( i < 0 || i >= args.length )
+            {
+                throw new Error( `Required arg at index ${i}` );
+                return "";
+            }
+
+            return args[i];
+        };
+
+        let getBool = ( i:number ) => {
+            let arg = requireArg(i);
+            let narg = Number(arg);
+
+            if( !isNaN(narg) )
+                return narg === 0 ? false : true;
+
+            return Boolean( arg.toLowerCase() );
+        };
+
+        args = x.substr( "cmd:".length ).split( " " );
+        if( args.length < 1 )
+        {
+            this.requestFailedResponse( response, "No command" );
+            return;
+        }
+
+        try {
+
+            cmd = requireArg(0);
+            args.shift();
+
+            switch( cmd )
+            {
+                default :
+                    this.requestFailedResponse( response, "Unknown command: " + cmd );
+                return;
+                
+                case "breakpoints" :
+                {
+                    this._dukProto.requestListBreakpoints()
+                        .then( resp => {
+                            
+                            let r = <DukListBreakResponse>resp;
+                            this.dbgLog( "Breakpoints: " + r.breakpoints.length );
+                            for( let i = 0; i < r.breakpoints.length; i++ )
+                            {
+                                let bp   = r.breakpoints[i];
+                                let line = ( "[" + i + "] " + bp.fileName + ": " + bp.line );
+                                
+                                this.dbgLog( line );  
+                                result += ( line + "\n" );
+                            }
+                            
+                        }).catch( err => {
+                            this.requestFailedResponse( response, "Failed: " + err );
+                        });
+                }
+                break;
+
+                case "scopes_globals" :
+                    let enabled = getBool( 0 );
+                    this.logToClient( `Scope Mask: ${enabled?'true':'false'}\n` );
+                    if( enabled )
+                        this._scopeMask |= DukScopeMask.Globals;
+                    else
+                        this._scopeMask &= (~DukScopeMask.Globals);
+                break;
+            }
+        }
+        catch( err ) {
+            
+            this.requestFailedResponse( response, `Cmd Failed: ${String(err)}` );
+            return;
+        }
+        
+        response.body = {
+            result: result,
+            variablesReference: 0
+        };
+        
+        this.sendResponse( response );
     }
 
     //-----------------------------------------------------------
@@ -1564,10 +1636,9 @@ class DukDebugSession extends DebugSession
         let scope     :DukScope = propSet.scope;
         let stackDepth:number   = scope.stackFrame.depth;
 
-        let toStrPromises:Promise<DukEvalResponse>[] = [];  // If we find regular object values, get their toString value
-        let objVars      :Variable[]                 = [];  // Save object vars separate to set the value
-                                                            //  when the toString promises return
-        
+        let toStrPromises:Promise<any>[] = [];  // If we find regular object values, get their toString value
+        let objVars      :Variable[]     = [];  // Save object vars separate to set the value
+                                                //  when the toString promises return
         if( !propSet.variables )
             propSet.variables = [];
         
@@ -1607,9 +1678,10 @@ class DukDebugSession extends DebugSession
                 {
                     // This object's properties have not been resolved yet,
                     // resolve it for the first time
-                    objPropSet          = new PropertySet( PropertySetType.Object );
-                    objPropSet.heapPtr  = (<Duk.TValObject>value).ptr;
-                    objPropSet.scope    = scope;
+                    objPropSet           = new PropertySet( PropertySetType.Object );
+                    objPropSet.scope     = scope;
+                    objPropSet.heapPtr   = (<Duk.TValObject>value).ptr;
+                    objPropSet.classType = (<Duk.TValObject>value).classID;
                     
                     objPropSet.handle           = this._dbgState.varHandles.create( objPropSet );
                     variable.variablesReference = objPropSet.handle;
@@ -1619,7 +1691,7 @@ class DukDebugSession extends DebugSession
 
                     // If it's a standard built-in object, then use it's name instead
                     // Otherwise we will register it to get it's toString() result
-                    if(  (<Duk.TValObject>value).classID != Duk.HObjectClassID.OBJECT )
+                    if( objPropSet.classType != Duk.HObjectClassID.OBJECT )
                     {
                         objPropSet.displayName = Duk.HObjectClassNames[(<Duk.TValObject>value).classID];
                         variable.value         = objPropSet.displayName;
@@ -1628,8 +1700,17 @@ class DukDebugSession extends DebugSession
                 }
                 
                 // Eval Object.toString()
-                let expr = `${key}.toString()`;
-                toStrPromises.push( this._dukProto.requestEval( expr, stackDepth ) );
+                //let expr = `${key}.toString()`;
+                //toStrPromises.push( this._dukProto.requestEval( expr, stackDepth ) );
+
+                // NOTE: We are not doing toString anymore, for the time
+                // being we just get the constructor name. This is because
+                // there's no way to call 'toString' by object/ptr value. Only
+                // by property lookup + eval. We can do that, as we did in the 
+                // first implementation, but it would be pretty slow for long property
+                // chains (deeply nested objects). Maybe we'll do so later, but for now
+                // the constructor name is enough.
+                toStrPromises.push( this.getConstructorNameByObject(objPropSet.heapPtr) );
                 objVars.push( variable );
             }
             else
@@ -1643,7 +1724,7 @@ class DukDebugSession extends DebugSession
         if( toStrPromises.length > 0 )
         {
             return Promise.all( toStrPromises )
-            .then( (toStrResults:DukEvalResponse[]) => {
+            .then( (toStrResults:string[]) => {
                 
                 // For objects whose 'toString' resolved to '[object Object]'
                 // we attempt to get a more suitable name by callng it's
@@ -1653,8 +1734,9 @@ class DukDebugSession extends DebugSession
 
                 for( let i=0; i < toStrResults.length; i++ )
                 {
-                    let rName:string;
-                    let r = toStrResults[i];
+                    let rName:string = toStrResults[i];
+                    /*
+                    //let r = toStrResults[i];
                     
                     rName = r.success ? String(r.result) : "Object";
 
@@ -1672,7 +1754,7 @@ class DukDebugSession extends DebugSession
                             rName = rName.substring( "[object ".length, rName.length-1 );
                         }
                     }
-
+                    */
                     this._dbgState.varHandles.get( objVars[i].variablesReference ).displayName = rName;
                     objVars[i].value = rName;
                 }
@@ -1726,6 +1808,49 @@ class DukDebugSession extends DebugSession
         }).catch( err => "" );
     }
     
+    //-----------------------------------------------------------
+    // Get constructor name by object ref
+    //-----------------------------------------------------------
+    private getConstructorNameByObject( ptr:Duk.TValPointer ): Promise<string>
+    {
+        // First get the artificials,
+        // then find the prototype object
+        // then get the constructors
+        // then find the name property
+
+        let protoPtr:Duk.TValPointer;
+
+        return this._dukProto.requestInspectHeapObj( ptr )
+        .then( (r:DukGetHeapObjInfoResponse) => {
+
+            let p:Duk.Property = ArrayX.firstOrNull( r.properties, n => n.key === "prototype" );
+            protoPtr = (<Duk.TValObject>p.value).ptr;
+            
+            return this._dukProto.requestInspectHeapObj( protoPtr );
+        })
+        .then( (r:DukGetHeapObjInfoResponse) => {
+
+            return this._dukProto.requestGetObjPropDescRange( protoPtr, 0, r.maxPropEntriesRange );
+        })
+        .then( (r:DukGetObjPropDescRangeResponse) => {
+
+            let p:Duk.Property = ArrayX.firstOrNull( r.properties, n => n.key === "constructor" );
+            let obj = <Duk.TValObject>p.value;
+
+            return this._dukProto.requestGetObjPropDescRange( (<Duk.TValObject>p.value).ptr, 0, 0x7fffffff );
+        })
+        .then( (r:DukGetObjPropDescRangeResponse) => {
+
+            let p:Duk.Property = ArrayX.firstOrNull( r.properties, n => n.key === "name" );
+            return <string>p.value;
+        })
+        .catch( ( err ) => {
+            let errStr = String( err );
+            this.dbgLog( errStr );
+            return "Object";
+        });
+    }
+
     //-----------------------------------------------------------
     // Returns true if the target prefix evaluates to the global
     // object. It rejects upon failure.

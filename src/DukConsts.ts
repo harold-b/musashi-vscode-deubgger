@@ -85,7 +85,7 @@
         GETHEAPOBJINFO      = 0x23,
         GETOBJPROPDESC      = 0x24,
         GETOBJPROPDESCRANGE = 0x25,
-        GETCLOSURES         = 0xF7,  // Musashi-specific
+        GETSCOPEKEYS        = 0x7F,  // Musashi-specific
     }
 
     export enum PropDescFlag

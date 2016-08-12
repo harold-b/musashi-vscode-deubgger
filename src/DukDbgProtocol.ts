@@ -40,6 +40,17 @@ export enum DukEndianness
     Big    = 3
 }
 
+export const enum DukScopeMask
+{
+    None     = 0x00,
+    Locals   = 0x01,
+    Closures = 0x02,
+    Globals  = 0x04,
+
+    All           = Locals | Closures | Globals,
+    AllButGlobals = Locals | Closures
+}
+
 export class DukDvalueMsg extends Array<Duk.DValue> {}
 
 export class DukProtoMessage
@@ -417,6 +428,18 @@ export class DukGetHeapObjInfoResponse extends DukResponse
 
         return <number>e_next.value + <number>a_size.value;
     }
+
+    // Return the value of the "e_next" property.
+    // Which gives us the maximum number of properties in
+    // the entry part of the object.
+    public get maxPropEntriesRange() : number
+    {
+        for( let i = 0; i < this.properties.length; i++ )
+        {
+            if( this.properties[i].key == "e_next" )
+                return <number>this.properties[i].value; 
+        }
+    }
 }
 
 // REQ <int: 0x25> <obj: target> <int: idx_start> <int: idx_end> EOM
@@ -435,25 +458,44 @@ export class DukGetObjPropDescRangeResponse extends DukGetHeapObjInfoResponse
 
 export class DukGetClosureResponse extends DukResponse
 {
+    // Taken from my modifications on duk_debugger.c:
+    /* GetScopeKeys Format:
+    * REQ <int: 0x7F> <int: scopeMask> [<int: stackLevel>] EOM
+    * REP [<string: localKeys>*] <int: 0(end of scope)>
+    *     [[<string: closureKeys*>] <int: 0(end of scope)>]
+    *     [<string: globalKeys>*] <int: 0(end of scope)>
+    *
+    * Returns an array of keys for each scope. We support 3 scopes:
+    *   Local    : 0x1
+    *   Closures : 0x2
+    *   Global   : 0x4
+    *
+    * scopeMask specifies whichs scopes to return. If a scope is not
+    * specified in the mask, or if it is specified, but that scope does not
+    * contain any keys, then no keys are returned, but the 'end of scope' marker
+    * is always returned for each scope, except for closures. If closures are
+    * not specified or a closure is empty, no scope end markes will be written.
+    * In conclusion: The locals scope end marker is guaranteed and will always be the
+    * first one, the globals scope end marker is also guaranteed and will always
+    * be the last one. But no closure marker is guaranteed to appear.
+    */
     public local   :string[];
     public closure :string[];
     public global  :string[];
 
     constructor( msg:DukDvalueMsg )
     {
-        super( Duk.CmdType.GETCLOSURES );
+        super( Duk.CmdType.GETSCOPEKEYS );
 
-        /// Scopes are denoted by an array of strings, then a 0 as the end marker of a scope
-        /// The last scope on the list is always the global scope.
-        /// If we only have one scope on the list, then that scope is always the global scope.
-        /// If we have more than 1 scope on the list. then
-        /// the first scope on the list is always the local scope.
+        /// Scopes are denoted by an array of strings, then a 0 as the end marker of a scope.
+        /// The first scope is always the first scope, 
+        /// the last scope on the list is always the global scope.
         /// If we have more than 2 scopes on the list, then any scope
         /// between the first and the last ( local and global ) are closure scopes.
-        let scopes = [];
+        let scopes:string[][] = [];
         for( let i=1; i < msg.length-1; i++ )
         {
-            let scope = [];
+            let scope:string[] = [];
             for( ; i < msg.length-1; i++ )
             {
                 // Check if the scope is finished?
@@ -461,7 +503,7 @@ export class DukGetClosureResponse extends DukResponse
                 {
                     assert( (<number>msg[i].value) == 0 );
                     scopes.push( scope );
-                    break;
+                    break;  // Continue to next scope
                 }
 
                 let name = <string>msg[i].value;
@@ -469,26 +511,22 @@ export class DukGetClosureResponse extends DukResponse
             }
         }
 
-        this.global = scopes[scopes.length-1];
+        if( scopes.length < 2 )
+            throw new Error( "GETSCOPEKEYS: Returned less than 2 scopes." );
 
-        if( scopes.length > 1 )
+        this.local   = scopes[0];
+        this.global  = scopes[scopes.length-1];
+        this.closure = [];
+
+        if( scopes.length > 2 )
         {
-            this.local = scopes[0];
-            if( this.global.length > 2 )
+            for( let i=1; i < scopes.length-1; i++ )
             {
-                this.closure = []
-                for( let i=1; i < scopes.length-1; i++ )
-                {
-                    for( let j=0; j < scopes[i].length; j++ )
-                        this.closure.push( scopes[i][j] );
-                }
+                for( let j=0; j < scopes[i].length; j++ )
+                    this.closure.push( scopes[i][j] );
             }
-            else
-                this.closure = [];
         }
-        else
-            this.local = [];
-    
+       
     }
 }
 
@@ -1006,15 +1044,16 @@ export class DukDbgProtocol extends EE.EventEmitter
     //-----------------------------------------------------------
     // This request is Musashi-specific.
     //-----------------------------------------------------------
-    public requestClosures( stackDepth:number = -1 ) : Promise<any>
+    public requestClosures( mask:DukScopeMask, stackDepth:number = -1 ) : Promise<any>
     {
         this._outBuf.clear();
         this._outBuf.writeREQ();
-        this._outBuf.writeInt( Duk.CmdType.GETCLOSURES );
+        this._outBuf.writeInt( Duk.CmdType.GETSCOPEKEYS );
+        this._outBuf.writeInt( mask );
         this._outBuf.writeInt( stackDepth );
         this._outBuf.writeEOM();
         
-        return this.sendRequest( Duk.CmdType.GETCLOSURES, this._outBuf.finish() );
+        return this.sendRequest( Duk.CmdType.GETSCOPEKEYS, this._outBuf.finish() );
     }
 
     //-----------------------------------------------------------
@@ -1718,7 +1757,7 @@ export class DukDbgProtocol extends EE.EventEmitter
                         value = new DukGetObjPropDescRangeResponse( msg );
                     break;
 
-                    case Duk.CmdType.GETCLOSURES    :
+                    case Duk.CmdType.GETSCOPEKEYS    :
                         value = new DukGetClosureResponse( msg );
                     break;
                 }
